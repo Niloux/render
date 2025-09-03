@@ -164,14 +164,15 @@ def render_gaussian_splatting(means, quats, scales, opacities, colors, viewmats,
     tile_width = math.ceil(img_width / float(16))
     tile_height = math.ceil(img_height / float(16))
     tiles_per_gauss, isect_ids, flatten_ids = isect_tiles(
-        means2d, radii, depths, 16, tile_width, tile_height, packed=False, n_cameras=viewmats.shape[0]
+        means2d, radii, depths, 16, tile_width, tile_height, packed=False, n_images=viewmats.shape[0]
     )
     isect_offsets = isect_offset_encode(isect_ids, viewmats.shape[0], tile_width, tile_height)
 
     # 球谐函数处理
     camera_centers = extract_camera_centers(viewmats)  # [C, 3]
     dirs = means[None, :, :] - camera_centers[:, None, :]  # [C, N, 3]
-    masks = radii > 0  # [C, N]
+    masks = (radii > 0).any(dim=-1)
+    # masks = radii > 0  # [C, N]
     shs = colors.expand(viewmats.shape[0], -1, -1, -1)  # [C, N, K, 3]
     batch_colors = spherical_harmonics(1, dirs, shs, masks=masks)  # [C, N, 3]
     batch_colors = torch.clamp_min(batch_colors + 0.5, 0.0)
