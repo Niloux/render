@@ -92,3 +92,23 @@ class GaussianComponent:
             f"GaussianComponent(name='{self.name}', points={self.num_points}, "
             f"memory={self.memory_usage:.2f}MB{semantic_info})"
         )
+
+    def get_xyz(self) -> torch.Tensor:  # [N, 3]
+        if self.name == "background":
+            return self.xyz
+
+    def get_quats(self) -> torch.Tensor:  # [N, 4]
+        if self.name == "background":
+            return torch.nn.functional.normalize(self.rotation)
+
+    def get_scales(self) -> torch.Tensor:  # [N, 3]
+        if self.name == "background":
+            return torch.exp(self.scaling)
+
+    def get_opacities(self) -> torch.Tensor:  # [N, 1]
+        if self.name == "background":
+            return torch.sigmoid(self.opacity)
+
+    def get_colors(self) -> torch.Tensor:  # [N, 3, 3]
+        if self.name == "background":
+            return torch.cat((self.feature_dc, self.feature_rest), dim=1)
