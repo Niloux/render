@@ -94,22 +94,33 @@ class GaussianComponent:
         )
 
     def get_xyz(self) -> torch.Tensor:  # [N, 3]
+        xyzs = []
         if self.name == "background":
-            return self.xyz
+            xyzs.append(self.xyz)
+        xyzs = torch.cat(xyzs, dim=0)
+        return xyzs
 
     def get_quats(self) -> torch.Tensor:  # [N, 4]
+        quats = []
         if self.name == "background":
-            return torch.nn.functional.normalize(self.rotation)
+            quats.append(torch.nn.functional.normalize(self.rotation))
+        return torch.cat(quats, dim=0)
 
     def get_scales(self) -> torch.Tensor:  # [N, 3]
+        scalings = []
         if self.name == "background":
-            return torch.exp(self.scaling)
+            scalings.append(torch.exp(self.scaling))
+        return torch.cat(scalings, dim=0)
 
     def get_opacities(self) -> torch.Tensor:  # [N, 1]
+        opacities = []
         if self.name == "background":
-            return torch.sigmoid(self.opacity)
+            opacities.append(torch.sigmoid(self.opacity))
+        return torch.cat(opacities, dim=0)
 
     def get_colors(self) -> torch.Tensor:  # [N, 4, 3]
+        colors = []
         if self.name == "background":
             features = torch.cat((self.feature_dc, self.feature_rest), dim=1)
-            return features
+            colors.append(features)
+        return torch.cat(colors, dim=0)

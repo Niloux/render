@@ -4,7 +4,13 @@ import time
 
 import numpy as np
 import torch
-from gsplat import fully_fused_projection, isect_offset_encode, isect_tiles, rasterize_to_pixels, spherical_harmonics
+from gsplat import (
+    fully_fused_projection,
+    isect_offset_encode,
+    isect_tiles,
+    rasterize_to_pixels,
+    spherical_harmonics,
+)
 from PIL import Image
 
 from models import GaussianComponent, GSModel
@@ -46,6 +52,8 @@ Ks = [
     [[2054.6259765625, 0.0, 967.3179321289062], [0.0, 2054.6259765625, 642.3396606445312], [0.0, 0.0, 1.0]],
     [[2046.391845703125, 0.0, 939.7431640625], [0.0, 2046.391845703125, 649.4197998046875], [0.0, 0.0, 1.0]],
 ]
+img_width = 1920
+img_height = 1280
 
 viewmats = torch.tensor(viewmats, dtype=torch.float32, device=device)
 Ks = torch.tensor(Ks, dtype=torch.float32, device=device)
@@ -94,84 +102,85 @@ def save_colors_as_png(colors_tensor, output_dir="output"):
         print(f"  - 平均像素值: {rgb_colors.mean():.3f}")
 
 
-with torch.no_grad():
-    t0 = time.time()
-    # 投影
-    project_results = fully_fused_projection(
-        means=means,
-        covars=None,
-        quats=quats,
-        scales=scales,
-        viewmats=viewmats,
-        Ks=Ks,
-        width=1920,
-        height=1280,
-        packed=False,
-        near_plane=0.001,
-        far_plane=1000,
-        calc_compensations=False,
-    )
-    radii, means2d, depths, conics, compensations = project_results  # 现在都是 [C, N, ...] 格式
+t0 = time.time()
+# 投影
+project_results = fully_fused_projection(
+    means=means,
+    covars=None,
+    quats=quats,
+    scales=scales,
+    viewmats=viewmats,
+    Ks=Ks,
+    width=img_width,
+    height=img_height,
+    packed=False,
+    near_plane=0.001,
+    far_plane=1000,
+    calc_compensations=True,
+)
+radii, means2d, depths, conics, compensations = project_results  # 现在都是 [C, N, ...] 格式
 
-    opacities = opacities[None, :, 0].expand(3, -1)  # [C, N]
+opacities = opacities[None, :, 0].expand(3, -1)  # [C, N]
 
-    if compensations is not None:
-        opacities = opacities * compensations
+if compensations is not None:
+    opacities = opacities * compensations
 
-    # title处理
-    tile_width = math.ceil(1920 / float(16))
-    tile_height = math.ceil(1280 / float(16))
-    tiles_per_gauss, isect_ids, flatten_ids = isect_tiles(
-        means2d, radii, depths, 16, tile_width, tile_height, packed=False, n_cameras=3
-    )
-    isect_offsets = isect_offset_encode(isect_ids, 3, tile_width, tile_height)
+# title处理
+tile_width = math.ceil(img_width / float(16))
+tile_height = math.ceil(img_height / float(16))
+tiles_per_gauss, isect_ids, flatten_ids = isect_tiles(
+    means2d, radii, depths, 16, tile_width, tile_height, packed=False, n_cameras=3
+)
+isect_offsets = isect_offset_encode(isect_ids, 3, tile_width, tile_height)
 
-    # 批量球谐函数处理
-    # 从viewmats计算相机中心位置: camera_center = -R^T * t
-    def extract_camera_centers(viewmats):
-        """
-        从view matrices提取相机中心位置
 
-        Args:
-            viewmats: 形状为 [C, 4, 4] 的view matrices
+# 批量球谐函数处理
+# 从viewmats计算相机中心位置: camera_center = -R^T * t
+def extract_camera_centers(viewmats):
+    """
+    从view matrices提取相机中心位置
 
-        Returns:
-            camera_centers: 形状为 [C, 3] 的相机中心位置
-        """
-        R = viewmats[:, :3, :3]  # 旋转矩阵 [C, 3, 3]
-        t = viewmats[:, :3, 3]  # 平移向量 [C, 3]
-        # camera_center = -R^T * t
-        camera_centers = -torch.bmm(R.transpose(-2, -1), t.unsqueeze(-1)).squeeze(-1)  # [C, 3]
-        return camera_centers
+    Args:
+        viewmats: 形状为 [C, 4, 4] 的view matrices
 
-    camera_centers = extract_camera_centers(viewmats)  # [C, 3]
-    dirs = means[None, :, :] - camera_centers[:, None, :]  # [C, N, 3]
-    masks = radii > 0  # [C, N]
-    shs = colors.expand(3, -1, -1, -1)  # [C, N, K, 3]
-    colors = spherical_harmonics(1, dirs, shs, masks=masks)  # [C, N, 3]
-    colors = torch.clamp_min(colors + 0.5, 0.0)
-    colors = torch.cat((colors, depths[..., None]), dim=-1)
+    Returns:
+        camera_centers: 形状为 [C, 3] 的相机中心位置
+    """
+    R = viewmats[:, :3, :3]  # 旋转矩阵 [C, 3, 3]
+    t = viewmats[:, :3, 3]  # 平移向量 [C, 3]
+    # camera_center = -R^T * t
+    camera_centers = -torch.bmm(R.transpose(-2, -1), t.unsqueeze(-1)).squeeze(-1)  # [C, 3]
+    return camera_centers
 
-    # 批量光栅化
-    render_colors, render_alphas = rasterize_to_pixels(
-        means2d,
-        conics,
-        colors,
-        opacities,
-        1920,
-        1280,
-        16,
-        isect_offsets,
-        flatten_ids,
-        backgrounds=None,
-        packed=False,
-        absgrad=True,
-    )
 
-    t1 = time.time()
-    print(f"渲染耗时: {t1 - t0:.6f} 秒")
+camera_centers = extract_camera_centers(viewmats)  # [C, 3]
+dirs = means[None, :, :] - camera_centers[:, None, :]  # [C, N, 3]
+masks = radii > 0  # [C, N]
+shs = colors.expand(3, -1, -1, -1)  # [C, N, K, 3]
+colors = spherical_harmonics(1, dirs, shs, masks=masks)  # [C, N, 3]
+colors = torch.clamp_min(colors + 0.5, 0.0)
+colors = torch.cat((colors, depths[..., None]), dim=-1)
 
-    # 保存渲染结果为PNG图像
-    print("\n开始保存渲染结果...")
-    save_colors_as_png(render_colors)
-    print("渲染结果保存完成！")
+# 批量光栅化
+render_colors, render_alphas = rasterize_to_pixels(
+    means2d,
+    conics,
+    colors,
+    opacities,
+    img_width,
+    img_height,
+    16,
+    isect_offsets,
+    flatten_ids,
+    backgrounds=None,
+    packed=False,
+    absgrad=True,
+)
+
+t1 = time.time()
+print(f"渲染耗时: {t1 - t0:.6f} 秒")
+
+# 保存渲染结果为PNG图像
+print("\n开始保存渲染结果...")
+save_colors_as_png(render_colors)
+print("渲染结果保存完成！")
