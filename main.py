@@ -102,40 +102,6 @@ def save_colors_as_png(colors_tensor, output_dir="output"):
         print(f"  - 平均像素值: {rgb_colors.mean():.3f}")
 
 
-t0 = time.time()
-# 投影
-project_results = fully_fused_projection(
-    means=means,
-    covars=None,
-    quats=quats,
-    scales=scales,
-    viewmats=viewmats,
-    Ks=Ks,
-    width=img_width,
-    height=img_height,
-    packed=False,
-    near_plane=0.001,
-    far_plane=1000,
-    calc_compensations=True,
-)
-radii, means2d, depths, conics, compensations = project_results  # 现在都是 [C, N, ...] 格式
-
-opacities = opacities[None, :, 0].expand(3, -1)  # [C, N]
-
-if compensations is not None:
-    opacities = opacities * compensations
-
-# title处理
-tile_width = math.ceil(img_width / float(16))
-tile_height = math.ceil(img_height / float(16))
-tiles_per_gauss, isect_ids, flatten_ids = isect_tiles(
-    means2d, radii, depths, 16, tile_width, tile_height, packed=False, n_cameras=3
-)
-isect_offsets = isect_offset_encode(isect_ids, 3, tile_width, tile_height)
-
-
-# 批量球谐函数处理
-# 从viewmats计算相机中心位置: camera_center = -R^T * t
 def extract_camera_centers(viewmats):
     """
     从view matrices提取相机中心位置
@@ -153,34 +119,172 @@ def extract_camera_centers(viewmats):
     return camera_centers
 
 
-camera_centers = extract_camera_centers(viewmats)  # [C, 3]
-dirs = means[None, :, :] - camera_centers[:, None, :]  # [C, N, 3]
-masks = radii > 0  # [C, N]
-shs = colors.expand(3, -1, -1, -1)  # [C, N, K, 3]
-colors = spherical_harmonics(1, dirs, shs, masks=masks)  # [C, N, 3]
-colors = torch.clamp_min(colors + 0.5, 0.0)
-colors = torch.cat((colors, depths[..., None]), dim=-1)
+def render_gaussian_splatting(means, quats, scales, opacities, colors, viewmats, Ks, img_width, img_height):
+    """
+    执行高斯点云渲染的核心函数
 
-# 批量光栅化
-render_colors, render_alphas = rasterize_to_pixels(
-    means2d,
-    conics,
-    colors,
-    opacities,
-    img_width,
-    img_height,
-    16,
-    isect_offsets,
-    flatten_ids,
-    backgrounds=None,
-    packed=False,
-    absgrad=True,
-)
+    Args:
+        means: 高斯点的3D位置 [N, 3]
+        quats: 高斯点的四元数旋转 [N, 4]
+        scales: 高斯点的缩放 [N, 3]
+        opacities: 高斯点的不透明度 [N, 1]
+        colors: 高斯点的球谐系数 [N, K, 3]
+        viewmats: 视图矩阵 [C, 4, 4]
+        Ks: 相机内参矩阵 [C, 3, 3]
+        img_width: 图像宽度
+        img_height: 图像高度
 
-t1 = time.time()
-print(f"渲染耗时: {t1 - t0:.6f} 秒")
+    Returns:
+        render_colors: 渲染的颜色图像 [C, H, W, 4]
+        render_alphas: 渲染的alpha通道 [C, H, W, 1]
+    """
+    # 投影
+    project_results = fully_fused_projection(
+        means=means,
+        covars=None,
+        quats=quats,
+        scales=scales,
+        viewmats=viewmats,
+        Ks=Ks,
+        width=img_width,
+        height=img_height,
+        packed=False,
+        near_plane=0.001,
+        far_plane=1000,
+        calc_compensations=True,
+    )
+    radii, means2d, depths, conics, compensations = project_results
 
-# 保存渲染结果为PNG图像
-print("\n开始保存渲染结果...")
-save_colors_as_png(render_colors)
-print("渲染结果保存完成！")
+    # 处理不透明度
+    batch_opacities = opacities[None, :, 0].expand(viewmats.shape[0], -1)  # [C, N]
+    if compensations is not None:
+        batch_opacities = batch_opacities * compensations
+
+    # Tile处理
+    tile_width = math.ceil(img_width / float(16))
+    tile_height = math.ceil(img_height / float(16))
+    tiles_per_gauss, isect_ids, flatten_ids = isect_tiles(
+        means2d, radii, depths, 16, tile_width, tile_height, packed=False, n_cameras=viewmats.shape[0]
+    )
+    isect_offsets = isect_offset_encode(isect_ids, viewmats.shape[0], tile_width, tile_height)
+
+    # 球谐函数处理
+    camera_centers = extract_camera_centers(viewmats)  # [C, 3]
+    dirs = means[None, :, :] - camera_centers[:, None, :]  # [C, N, 3]
+    masks = radii > 0  # [C, N]
+    shs = colors.expand(viewmats.shape[0], -1, -1, -1)  # [C, N, K, 3]
+    batch_colors = spherical_harmonics(1, dirs, shs, masks=masks)  # [C, N, 3]
+    batch_colors = torch.clamp_min(batch_colors + 0.5, 0.0)
+    batch_colors = torch.cat((batch_colors, depths[..., None]), dim=-1)
+
+    # 光栅化
+    render_colors, render_alphas = rasterize_to_pixels(
+        means2d,
+        conics,
+        batch_colors,
+        batch_opacities,
+        img_width,
+        img_height,
+        16,
+        isect_offsets,
+        flatten_ids,
+        backgrounds=None,
+        packed=False,
+        absgrad=True,
+    )
+
+    return render_colors, render_alphas
+
+
+def benchmark_rendering(num_iterations=10, save_images=False):
+    """
+    测试连续渲染的平均耗时
+
+    Args:
+        num_iterations: 测试迭代次数
+        save_images: 是否保存最后一次渲染的图像
+
+    Returns:
+        avg_time: 平均渲染时间(秒)
+        times: 所有渲染时间的列表
+    """
+    print(f"开始性能测试，共 {num_iterations} 次迭代...")
+
+    times = []
+    render_colors = None
+
+    # 预热GPU
+    print("GPU预热中...")
+    render_gaussian_splatting(means, quats, scales, opacities, colors, viewmats, Ks, img_width, img_height)
+    torch.cuda.synchronize() if torch.cuda.is_available() else None
+
+    for i in range(num_iterations):
+        t0 = time.time()
+
+        render_colors, render_alphas = render_gaussian_splatting(
+            means, quats, scales, opacities, colors, viewmats, Ks, img_width, img_height
+        )
+
+        # 确保GPU计算完成
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+
+        t1 = time.time()
+        iteration_time = t1 - t0
+        times.append(iteration_time)
+
+        print(f"迭代 {i + 1:2d}/{num_iterations}: {iteration_time:.6f} 秒")
+
+    avg_time = sum(times) / len(times)
+    std_time = np.std(times)
+    min_time = min(times)
+    max_time = max(times)
+
+    print("\n=== 性能测试结果 ===")
+    print(f"平均渲染时间: {avg_time:.6f} 秒")
+    print(f"标准差:       {std_time:.6f} 秒")
+    print(f"最快时间:     {min_time:.6f} 秒")
+    print(f"最慢时间:     {max_time:.6f} 秒")
+    print(f"FPS (平均):   {1.0 / avg_time:.2f}")
+
+    if save_images and render_colors is not None:
+        print("\n保存最后一次渲染结果...")
+        save_colors_as_png(render_colors)
+        print("图像保存完成！")
+
+    return avg_time, times
+
+
+def main():
+    """
+    主函数：执行渲染测试和性能基准测试
+
+    可以通过修改以下参数来自定义测试：
+    - benchmark_rendering(num_iterations=N)：设置测试迭代次数
+    - benchmark_rendering(save_images=True)：保存最后一次渲染的图像
+    """
+    # 单次渲染测试
+    print("=== 单次渲染测试 ===")
+    t0 = time.time()
+    render_colors, render_alphas = render_gaussian_splatting(
+        means, quats, scales, opacities, colors, viewmats, Ks, img_width, img_height
+    )
+    t1 = time.time()
+    print(f"单次渲染耗时: {t1 - t0:.6f} 秒")
+
+    # 保存单次渲染结果
+    print("\n保存单次渲染结果...")
+    save_colors_as_png(render_colors)
+    print("单次渲染结果保存完成！")
+
+    # 性能基准测试
+    print("\n=== 性能基准测试 ===")
+    avg_time, times = benchmark_rendering(num_iterations=20, save_images=False)
+
+    # 可选：更长时间的性能测试
+    # print("\n=== 长时间性能测试 ===")
+    # avg_time_long, times_long = benchmark_rendering(num_iterations=100, save_images=False)
+
+
+if __name__ == "__main__":
+    main()
