@@ -1,6 +1,12 @@
+import os
+import time
+
+import gsplat
 import torch
 
 from models import GaussianComponent, GSModel
+
+os.environ["TORCH_CUDA_ARCH_LIST"] = "12.0"
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 model = GSModel.load_from_pth("model.pth").to_device(device)
@@ -40,3 +46,9 @@ Ks = [
 
 viewmats = torch.tensor(viewmats, dtype=torch.float32, device=device)
 Ks = torch.tensor(Ks, dtype=torch.float32, device=device)
+
+with torch.no_grad():
+    t0 = time.time()
+    colors, alphas, meta = gsplat.rasterization(means, quats, scales, opacities, colors, viewmats, Ks, 1920, 1280)
+    t1 = time.time()
+    print(f"渲染耗时: {t1 - t0:.6f} 秒")

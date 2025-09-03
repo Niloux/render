@@ -105,10 +105,11 @@ class GaussianComponent:
         if self.name == "background":
             return torch.exp(self.scaling)
 
-    def get_opacities(self) -> torch.Tensor:  # [N, 1]
+    def get_opacities(self) -> torch.Tensor:  # [N]
         if self.name == "background":
-            return torch.sigmoid(self.opacity)
+            return torch.sigmoid(self.opacity).squeeze(-1)
 
-    def get_colors(self) -> torch.Tensor:  # [N, 3, 3]
+    def get_colors(self) -> torch.Tensor:  # [N, D]
         if self.name == "background":
-            return torch.cat((self.feature_dc, self.feature_rest), dim=1)
+            features = torch.cat((self.feature_dc, self.feature_rest), dim=1)
+            return features.reshape(features.shape[0], -1)
