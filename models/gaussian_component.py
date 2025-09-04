@@ -5,6 +5,8 @@ from typing import Optional
 
 import torch
 
+from lidar_prepare import CENTER, RADIUS
+
 
 @dataclass
 class GaussianComponent:
@@ -96,19 +98,29 @@ class GaussianComponent:
     def get_xyz(self) -> torch.Tensor:  # [N, 3]
         if self.name == "background":
             return self.xyz
+        elif self.name == "sky":
+            dists = torch.linalg.norm(self.xyz - CENTER, dim=1)
+            ratios = dists / (2 * RADIUS)
+            # 将条件张量扩展到匹配xyz的形状 (N, 3)
+            condition = (ratios < 1.0).unsqueeze(1)  # (N, 1) -> 广播到 (N, 3)
+            xyz = torch.where(condition, CENTER + (self.xyz - CENTER) / ratios.unsqueeze(1), self.xyz)
+            return xyz
 
     def get_quats(self) -> torch.Tensor:  # [N, 4]
-        if self.name == "background":
+        if self.name in ["background", "sky"]:
             return torch.nn.functional.normalize(self.rotation)
 
     def get_scales(self) -> torch.Tensor:  # [N, 3]
         if self.name == "background":
             return torch.exp(self.scaling)
+        elif self.name == "sky":
+            scales = torch.exp(self.scaling)
+            return torch.clamp(scales, max=RADIUS)
 
     def get_opacities(self) -> torch.Tensor:  # [N, 1]
-        if self.name == "background":
+        if self.name in ["background", "sky"]:
             return torch.sigmoid(self.opacity)
 
     def get_colors(self) -> torch.Tensor:  # [N, 4, 3]
-        if self.name == "background":
+        if self.name in ["background", "sky"]:
             return torch.cat((self.feature_dc, self.feature_rest), dim=1)

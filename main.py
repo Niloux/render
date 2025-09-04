@@ -20,12 +20,14 @@ os.environ["TORCH_CUDA_ARCH_LIST"] = "12.0"
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 model = GSModel.load_from_pth("model.pth").to_device(device)
 background: GaussianComponent = model.get_component("background")
+sky: GaussianComponent = model.get_component("sky")
 
-means = background.get_xyz()
-quats = background.get_quats()
-scales = background.get_scales()
-opacities = background.get_opacities()
-colors = background.get_colors()
+# 合并背景和天空的高斯点参数
+means = torch.cat([background.get_xyz(), sky.get_xyz()])
+quats = torch.cat([background.get_quats(), sky.get_quats()])
+scales = torch.cat([background.get_scales(), sky.get_scales()])
+opacities = torch.cat([background.get_opacities(), sky.get_opacities()])
+colors = torch.cat([background.get_colors(), sky.get_colors()])
 
 viewmats = [
     [

@@ -11,3 +11,4 @@ wheels/
 
 *.pth
 output/
+*.ply

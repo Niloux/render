@@ -7,6 +7,7 @@ requires-python = ">=3.12"
 dependencies = [
     "gsplat>=1.5.3",
     "packaging>=25.0",
+    "plyfile>=1.1.2",
     "torch>=2.8.0",
     "torchvision>=0.23.0",
 ]
