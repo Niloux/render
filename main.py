@@ -164,23 +164,10 @@ def main():
     - benchmark_rendering(num_iterations=N)：设置测试迭代次数
     - benchmark_rendering(save_images=True)：保存最后一次渲染的图像
     """
-    # 单次渲染测试
-    print("=== 单次渲染测试 ===")
-    t0 = time.time()
-    render_colors, render_alphas = render_gaussian_splatting(
-        means, quats, scales, opacities, colors, viewmats, Ks, img_width, img_height
-    )
-    t1 = time.time()
-    print(f"单次渲染耗时: {t1 - t0:.6f} 秒")
-
-    # 保存单次渲染结果
-    print("\n保存单次渲染结果...")
-    save_colors_as_png(render_colors)
-    print("单次渲染结果保存完成！")
 
     # 性能基准测试
     print("\n=== 性能基准测试 ===")
-    avg_time_long, times_long = benchmark_rendering(num_iterations=100, save_images=False)
+    avg_time_long, times_long = benchmark_rendering(num_iterations=100, save_images=True)
 
 
 if __name__ == "__main__":
