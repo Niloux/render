@@ -47,11 +47,15 @@ Ks = [
     [[2054.6259765625, 0.0, 967.3179321289062], [0.0, 2054.6259765625, 642.3396606445312], [0.0, 0.0, 1.0]],
     [[2046.391845703125, 0.0, 939.7431640625], [0.0, 2046.391845703125, 649.4197998046875], [0.0, 0.0, 1.0]],
 ]
-img_width = 1920
-img_height = 1280
+scale = 1
+img_width = 1920 * scale
+img_height = 1280 * scale
+
+# 创建缩放矩阵，仅缩放 f_x, f_y, c_x, c_y
+scale_matrix = torch.tensor([[scale, 0, scale], [0, scale, scale], [0, 0, 1]], dtype=torch.float32, device=device)
 
 viewmats = torch.tensor(viewmats, dtype=torch.float32, device=device)
-Ks = torch.tensor(Ks, dtype=torch.float32, device=device)
+Ks = torch.tensor(Ks, dtype=torch.float32, device=device) * scale_matrix
 
 
 def save_colors_as_png(colors_tensor, output_dir="output"):
@@ -87,7 +91,7 @@ def save_colors_as_png(colors_tensor, output_dir="output"):
         rgb_colors = (rgb_colors * 255).astype(np.uint8)
 
         # 创建PIL图像并保存
-        img = Image.fromarray(rgb_colors, "RGB")
+        img = Image.fromarray(rgb_colors)
         output_path = os.path.join(output_dir, f"view_{view_idx:02d}.png")
         img.save(output_path)
         print(f"保存视角 {view_idx} 到: {output_path}")
