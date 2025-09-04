@@ -131,11 +131,12 @@ def render_native(means, quats, scales, opacities, colors, viewmats, Ks, img_wid
         near_plane=0.001,
         far_plane=1000,
         sh_degree=1,
-        packed=False,
+        packed=True,
         absgrad=True,
         tile_size=16,
+        radius_clip=0.0,
         distributed=False,
-        rasterize_mode="antialiased",  # 启用抗锯齿模式，与render_gaussian_splatting保持一致
+        rasterize_mode="antialiased",  # 启用抗锯齿模式
     )
     return render_colors, render_alphas
 
