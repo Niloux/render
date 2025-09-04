@@ -102,12 +102,12 @@ def save_colors_as_png(colors_tensor, output_dir="output"):
         print(f"  - 平均像素值: {rgb_colors.mean():.3f}")
 
 
-def extract_camera_centers(viewmats):
+def extract_camera_centers(viewmats: torch.Tensor):
     """
     从view matrices提取相机中心位置
 
     Args:
-        viewmats: 形状为 [C, 4, 4] 的view matrices
+        viewmats: 形状为 [C, 4, 4] 的view matrices, World2Camera的转换矩阵
 
     Returns:
         camera_centers: 形状为 [C, 3] 的相机中心位置
@@ -129,7 +129,7 @@ def render_gaussian_splatting(means, quats, scales, opacities, colors, viewmats,
         scales: 高斯点的缩放 [N, 3]
         opacities: 高斯点的不透明度 [N, 1]
         colors: 高斯点的球谐系数 [N, K, 3]
-        viewmats: 视图矩阵 [C, 4, 4]
+        viewmats: World2Camera转换矩阵 [C, 4, 4]
         Ks: 相机内参矩阵 [C, 3, 3]
         img_width: 图像宽度
         img_height: 图像高度
@@ -280,11 +280,7 @@ def main():
 
     # 性能基准测试
     print("\n=== 性能基准测试 ===")
-    avg_time, times = benchmark_rendering(num_iterations=20, save_images=False)
-
-    # 可选：更长时间的性能测试
-    # print("\n=== 长时间性能测试 ===")
-    # avg_time_long, times_long = benchmark_rendering(num_iterations=100, save_images=False)
+    avg_time_long, times_long = benchmark_rendering(num_iterations=100, save_images=False)
 
 
 if __name__ == "__main__":
