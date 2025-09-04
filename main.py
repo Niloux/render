@@ -6,7 +6,7 @@ import torch
 from PIL import Image
 
 from models import GaussianComponent, GSModel
-from render_kernel import render_gaussian_splatting
+from render_kernel import render
 
 os.environ["TORCH_CUDA_ARCH_LIST"] = "12.0"
 
@@ -116,13 +116,13 @@ def benchmark_rendering(num_iterations=10, save_images=False):
 
     # 预热GPU
     print("GPU预热中...")
-    render_gaussian_splatting(means, quats, scales, opacities, colors, viewmats, Ks, img_width, img_height)
+    render(means, quats, scales, opacities, colors, viewmats, Ks, img_width, img_height)
     torch.cuda.synchronize() if torch.cuda.is_available() else None
 
     for i in range(num_iterations):
         t0 = time.time()
 
-        render_colors, render_alphas = render_gaussian_splatting(
+        render_colors, render_alphas = render(
             means, quats, scales, opacities, colors, viewmats, Ks, img_width, img_height
         )
 

@@ -5,9 +5,12 @@ from gsplat import (
     fully_fused_projection,
     isect_offset_encode,
     isect_tiles,
+    rasterization,
     rasterize_to_pixels,
     spherical_harmonics,
 )
+
+NATIVE = True
 
 
 def extract_camera_centers(viewmats: torch.Tensor):
@@ -104,3 +107,41 @@ def render_gaussian_splatting(means, quats, scales, opacities, colors, viewmats,
     )
 
     return render_colors, render_alphas
+
+
+def render_native(means, quats, scales, opacities, colors, viewmats, Ks, img_width, img_height):
+    """原生的渲染方法，使用rasterization函数的内置球谐函数处理"""
+    # gsplat库期望opacities形状为[N,]，而不是[N,1]
+    if opacities.dim() == 2 and opacities.shape[1] == 1:
+        opacities = opacities.squeeze(1)
+
+    # 使用rasterization函数的内置球谐函数处理
+    # colors保持[N, 4, 3]形状，设置sh_degree=1让rasterization内部处理球谐函数
+    # 关键修复：添加rasterize_mode="antialiased"启用抗锯齿补偿，消除渲染裂痕
+    render_colors, render_alphas, _ = rasterization(
+        means=means,
+        quats=quats,
+        scales=scales,
+        opacities=opacities,
+        colors=colors,
+        viewmats=viewmats,
+        Ks=Ks,
+        width=img_width,
+        height=img_height,
+        near_plane=0.001,
+        far_plane=1000,
+        sh_degree=1,
+        packed=False,
+        absgrad=True,
+        tile_size=16,
+        distributed=False,
+        rasterize_mode="antialiased",  # 启用抗锯齿模式，与render_gaussian_splatting保持一致
+    )
+    return render_colors, render_alphas
+
+
+def render(means, quats, scales, opacities, colors, viewmats, Ks, img_width, img_height):
+    if NATIVE:
+        return render_native(means, quats, scales, opacities, colors, viewmats, Ks, img_width, img_height)
+    else:
+        return render_gaussian_splatting(means, quats, scales, opacities, colors, viewmats, Ks, img_width, img_height)
