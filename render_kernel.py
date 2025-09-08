@@ -134,7 +134,7 @@ def render_native(means, quats, scales, opacities, colors, viewmats, Ks, img_wid
         packed=True,
         absgrad=True,
         tile_size=16,
-        radius_clip=0.0,
+        radius_clip=3.0,
         distributed=False,
         rasterize_mode="antialiased",  # 启用抗锯齿模式
     )
