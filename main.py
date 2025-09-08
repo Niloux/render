@@ -1,5 +1,6 @@
 import os
 import time
+from typing import List
 
 import numpy as np
 import torch
@@ -14,13 +15,18 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 model = GSModel.load_from_pth("model.pth").to_device(device)
 background: GaussianComponent = model.get_component("background")
 sky: GaussianComponent = model.get_component("sky")
+actors: List[GaussianComponent] = model.get_components_by_type("obj")
+actor: GaussianComponent = actors[1]
+
+position = np.array([0, 0, 1.69])
+heading = 1.728
 
 # 合并背景和天空的高斯点参数
-means = torch.cat([background.get_xyz(), sky.get_xyz()])
-quats = torch.cat([background.get_quats(), sky.get_quats()])
-scales = torch.cat([background.get_scales(), sky.get_scales()])
-opacities = torch.cat([background.get_opacities(), sky.get_opacities()])
-colors = torch.cat([background.get_colors(), sky.get_colors()])
+means = torch.cat([background.get_xyz(), sky.get_xyz(), actor.get_xyz(heading=heading, position=position)])
+quats = torch.cat([background.get_quats(), sky.get_quats(), actor.get_quats(heading=heading)])
+scales = torch.cat([background.get_scales(), sky.get_scales(), actor.get_scales()])
+opacities = torch.cat([background.get_opacities(), sky.get_opacities(), actor.get_opacities()])
+colors = torch.cat([background.get_colors(), sky.get_colors(), actor.get_colors()])
 
 viewmats = [
     [
