@@ -16,7 +16,9 @@ model = GSModel.load_from_pth("model.pth").to_device(device)
 background: GaussianComponent = model.get_component("background")
 sky: GaussianComponent = model.get_component("sky")
 actors: List[GaussianComponent] = model.get_components_by_type("obj")
-actor: GaussianComponent = actors[1]
+names = [actor.name for actor in actors]
+print(f"{names=}")  # 010,016,034是效果还ok的
+actor: GaussianComponent = actors[2]
 
 position = np.array([0, 0, 1.69])
 heading = 1.728
