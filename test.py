@@ -1,6 +1,7 @@
 import numpy as np
 
-CENTER = [492.07811834, -147.71372052, -32.64144724]
+# 直接定义为numpy数组，消除后续转换开销
+CENTER = np.array([492.07811834, -147.71372052, -32.64144724])
 
 # 相机到车辆坐标系的变换矩阵 (T_camera_to_vehicle)
 ext = np.array([
@@ -11,38 +12,41 @@ ext = np.array([
 ])
 
 
-def create_pose_matrix(heading_rad, world_x, world_y, world_z):
+def create_pose_matrix(heading_rad: float, world_position: np.ndarray) -> np.ndarray:
     """
     根据航向角和世界坐标创建车辆到世界坐标系的变换矩阵
 
     Args:
-        heading_rad (float): 航向角，单位为弧度
-        world_x (float): 世界坐标系中的X坐标
-        world_y (float): 世界坐标系中的Y坐标
-        world_z (float): 世界坐标系中的Z坐标
+        heading_rad: 航向角，单位为弧度
+        world_position: 世界坐标 [x, y, z] 的numpy数组
 
     Returns:
-        np.ndarray: 4x4的车辆到世界坐标系变换矩阵
+        4x4的车辆到世界坐标系变换矩阵
     """
     # 计算旋转矩阵（绕Z轴旋转）
     cos_h = np.cos(heading_rad)
     sin_h = np.sin(heading_rad)
 
-    # 构建4x4变换矩阵
-    T_vehicle_to_world = np.array([
-        [cos_h, -sin_h, 0.0, world_x - CENTER[0]],
-        [sin_h, cos_h, 0.0, world_y - CENTER[1]],
-        [0.0, 0.0, 1.0, world_z - CENTER[2]],
+    # 减去场景center - 现在类型一致，无需转换
+    position = world_position - CENTER
+
+    # 构建4x4变换矩阵 - 直接构造，避免多次数组创建
+    return np.array([
+        [cos_h, -sin_h, 0.0, position[0]],
+        [sin_h, cos_h, 0.0, position[1]],
+        [0.0, 0.0, 1.0, position[2]],
         [0.0, 0.0, 0.0, 1.0],
     ])
 
-    return T_vehicle_to_world
 
-
-# 测试函数
 if __name__ == "__main__":
-    ego_pose = create_pose_matrix(1.728, 498.28, -186.11, -31.95)
+    # 直接使用numpy数组，消除类型转换
+    ego_position = np.array([498.28, -186.11, -31.95])
+    ego_heading = 1.728
+
+    ego_pose = create_pose_matrix(ego_heading, ego_position)
     print(f"ego pose = {ego_pose}")
+
     c2w = ego_pose @ ext
     w2c = np.linalg.inv(c2w)
     print(f"c2w = {c2w}")

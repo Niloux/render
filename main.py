@@ -17,10 +17,10 @@ background: GaussianComponent = model.get_component("background")
 sky: GaussianComponent = model.get_component("sky")
 actors: List[GaussianComponent] = model.get_components_by_type("obj")
 names = [actor.name for actor in actors]
-print(f"{names=}")  # 010,016,034是效果还ok的
-actor: GaussianComponent = actors[2]
+print(f"{names=}")  # 010,016,034是效果还ok的, 下标对应2, 5, 9
+actor: GaussianComponent = actors[9]
 
-position = np.array([0, 0, 1.69])
+position = np.array([0, 0, 1.8])
 heading = 1.728
 
 # 合并背景和天空的高斯点参数
