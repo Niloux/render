@@ -3,9 +3,7 @@
 from dataclasses import dataclass
 from typing import Optional
 
-import numpy as np
 import torch
-from scipy.spatial.transform import Rotation as R
 
 from lidar_prepare import CENTER, RADIUS
 
@@ -97,7 +95,18 @@ class GaussianComponent:
             f"memory={self.memory_usage:.2f}MB{semantic_info})"
         )
 
-    def get_xyz(self, heading: Optional[float] = None, position: Optional[np.ndarray] = None) -> torch.Tensor:  # [N, 3]
+    def get_xyz(
+        self, heading: Optional[float] = None, position: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:  # [N, 3]
+        """获取变换后的3D坐标
+
+        Args:
+            heading: 航向角（弧度），仅对object类型有效
+            position: 世界坐标位置 [3] 的torch张量，仅对object类型有效
+
+        Returns:
+            变换后的坐标张量 [N, 3]
+        """
         if self.name == "background":
             return self.xyz
         elif self.name == "sky":
@@ -108,32 +117,60 @@ class GaussianComponent:
             xyz = torch.where(condition, CENTER + (self.xyz - CENTER) / ratios.unsqueeze(1), self.xyz)
             return xyz
         else:
-            rot = R.from_euler("z", heading)
-            quat_heading = rot.as_quat()  # [x,y,z,w]，SciPy是xyzw，需要转换为wxyz
-            quat_heading = np.array([quat_heading[3], quat_heading[0], quat_heading[1], quat_heading[2]])  # wxyz
+            # 完全使用torch操作，消除numpy转换开销
+            device = self.xyz.device
 
-            rot_matrix = rot.as_matrix()  # [3,3]
-            means_objs = self.xyz.detach().cpu().numpy()
-            means_rotated = np.dot(means_objs, rot_matrix.T)
-            means_world = means_rotated + position  # [N,3]
-            return torch.from_numpy(means_world).float().to(self.xyz.device)
+            # 构建Z轴旋转矩阵 [3, 3]
+            cos_h = torch.cos(torch.tensor(heading, device=device))
+            sin_h = torch.sin(torch.tensor(heading, device=device))
+            rot_matrix = torch.tensor([[cos_h, -sin_h, 0.0], [sin_h, cos_h, 0.0], [0.0, 0.0, 1.0]], device=device)
+
+            # 向量化矩阵乘法：[N, 3] @ [3, 3] -> [N, 3]
+            means_rotated = torch.matmul(self.xyz, rot_matrix.T)
+            means_world = means_rotated + position.to(device)
+            return means_world
 
     def get_quats(self, heading: Optional[float] = None) -> torch.Tensor:  # [N, 4]
+        """获取变换后的四元数
+
+        Args:
+            heading: 航向角（弧度），仅对object类型有效
+
+        Returns:
+            归一化的四元数张量 [N, 4] (wxyz格式)
+        """
         if self.name in ["background", "sky"]:
             return torch.nn.functional.normalize(self.rotation)
         else:
-            rot = R.from_euler("z", heading)  # 围绕Z轴
-            quat_heading = rot.as_quat()  # [x,y,z,w]，SciPy是xyzw，需要转换为wxyz
-            quat_heading = np.array([quat_heading[3], quat_heading[0], quat_heading[1], quat_heading[2]])  # wxyz
+            # 完全使用torch操作，消除numpy转换和循环
+            device = self.rotation.device
 
-            quats_object = self.rotation.detach().cpu().numpy()
-            N = len(quats_object)
-            quats_world = np.zeros((N, 4))
-            for i in range(N):
-                quats_world[i] = quaternion_multiply(quat_heading, quats_object[i])
-            quats_world /= np.linalg.norm(quats_world, axis=1, keepdims=True)
+            # 构建Z轴旋转四元数 (wxyz格式)
+            half_angle = heading * 0.5
+            cos_half = torch.cos(torch.tensor(half_angle, device=device))
+            sin_half = torch.sin(torch.tensor(half_angle, device=device))
+            quat_heading = torch.tensor([cos_half, 0.0, 0.0, sin_half], device=device)  # [w, x, y, z]
 
-            return torch.from_numpy(quats_world).float().to(self.rotation.device)
+            # 向量化四元数乘法：quat_heading * self.rotation
+            # q1 * q2 = [w1*w2 - x1*x2 - y1*y2 - z1*z2,
+            #            w1*x2 + x1*w2 + y1*z2 - z1*y2,
+            #            w1*y2 - x1*z2 + y1*w2 + z1*x2,
+            #            w1*z2 + x1*y2 - y1*x2 + z1*w2]
+            w1, x1, y1, z1 = quat_heading[0], quat_heading[1], quat_heading[2], quat_heading[3]
+            w2, x2, y2, z2 = self.rotation[:, 0], self.rotation[:, 1], self.rotation[:, 2], self.rotation[:, 3]
+
+            quats_world = torch.stack(
+                [
+                    w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2,  # w
+                    w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2,  # x
+                    w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2,  # y
+                    w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2,  # z
+                ],
+                dim=1,
+            )
+
+            # 归一化
+            return torch.nn.functional.normalize(quats_world, dim=1)
 
     def get_scales(self) -> torch.Tensor:  # [N, 3]
         if self.name == "sky":
@@ -147,15 +184,3 @@ class GaussianComponent:
 
     def get_colors(self) -> torch.Tensor:  # [N, 4, 3]
         return torch.cat((self.feature_dc, self.feature_rest), dim=1)
-
-
-def quaternion_multiply(q1, q2):
-    """q1 * q2，四元数乘法 (wxyz)"""
-    w1, x1, y1, z1 = q1
-    w2, x2, y2, z2 = q2
-    return np.array([
-        w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2,
-        w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2,
-        w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2,
-        w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2,
-    ])

@@ -20,7 +20,7 @@ names = [actor.name for actor in actors]
 print(f"{names=}")  # 010,016,034是效果还ok的, 下标对应2, 5, 9
 actor: GaussianComponent = actors[9]
 
-position = np.array([0, 0, 1.8])
+position = torch.tensor([0, 0, 1.8], device=device)
 heading = 1.728
 
 # 合并背景和天空的高斯点参数
