@@ -18,7 +18,7 @@ sky: GaussianComponent = model.get_component("sky")
 actors: List[GaussianComponent] = model.get_components_by_type("obj")
 names = [actor.name for actor in actors]
 print(f"{names=}")  # 010,016,034是效果还ok的, 下标对应2, 5, 9
-actor: GaussianComponent = actors[9]
+actor: GaussianComponent = actors[5]
 
 position = torch.tensor([0, 0, 1.8], device=device)
 heading = 1.728
