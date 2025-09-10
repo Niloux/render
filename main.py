@@ -45,55 +45,75 @@ extrinsics = [
         [0.0, 0.0, 0.0, 1.0],
     ],
 ]
-intrinsics = [[2049.873291015625, 0.0, 964.3667602539062], [0.0, 2049.873291015625, 644.5161743164062], [0.0, 0.0, 1.0]]
+intrinsics = [
+    [[2049.873291015625, 0.0, 964.3667602539062], [0.0, 2049.873291015625, 644.5161743164062], [0.0, 0.0, 1.0]]
+]
+img_width = 1920
+img_height = 1280
+
 # 输入主车的轨迹点和航向角
 ego_position = torch.tensor([498.28, -186.11, -31.95], device=device)
 ego_position = ego_position - CENTER
 ego_heading = 1.728
 
-# 计算当前帧的viewmats
 
-viewmats = [
-    [
-        [0.9891819357872009, 0.14656783640384674, 0.006079603917896748, 2.466172456741333],
-        [0.008798381313681602, -0.017908472567796707, -0.9998009204864502, 2.102562427520752],
-        [-0.14642979204654694, 0.9890385270118713, -0.019004298374056816, 37.407142639160156],
-        [0.0, 0.0, 0.0, 1.0],
-    ],
-    [
-        [0.6000252366065979, 0.7999652028083801, 0.00503957737237215, 28.221078872680664],
-        [0.022167669609189034, -0.010329311713576317, -0.9997009038925171, 2.345853567123413],
-        [-0.7996739149093628, 0.5999574661254883, -0.023931210860610008, 24.904296875],
-        [0.0, 0.0, 0.0, 1.0],
-    ],
-    [
-        [0.8138973116874695, -0.5809189081192017, 0.010220356285572052, -24.17304039001465],
-        [-0.004636919591575861, -0.024084700271487236, -0.9996991753578186, 1.9141963720321655],
-        [0.5809902548789978, 0.8136050701141357, -0.022296147421002388, 28.57950210571289],
-        [0.0, 0.0, 0.0, 1.0],
-    ],
-    [
-        [0.98912947226739, 0.14696407952990476, 0.00494433210480903, -0.5148595529038485],
-        [0.006459232615176294, -0.009832521033172998, -0.9999307975275867, 2.4055291183765446],
-        [-0.1469052940028298, 0.9890929586535637, -0.010674911516359345, 37.37956928453708],
-        [0.0, 0.0, 0.0, 1.0],
-    ],
-]
-Ks = [
-    [[2049.873291015625, 0.0, 964.3667602539062], [0.0, 2049.873291015625, 644.5161743164062], [0.0, 0.0, 1.0]],
-    [[2054.6259765625, 0.0, 967.3179321289062], [0.0, 2054.6259765625, 642.3396606445312], [0.0, 0.0, 1.0]],
-    [[2046.391845703125, 0.0, 939.7431640625], [0.0, 2046.391845703125, 649.4197998046875], [0.0, 0.0, 1.0]],
-    [[2049.873291015625, 0.0, 964.3667602539062], [0.0, 2049.873291015625, 644.5161743164062], [0.0, 0.0, 1.0]],
-]
-scale = 1
-img_width = 1920 * scale
-img_height = 1280 * scale
+# 计算当前帧的viewmats
+def create_viewmats(
+    extrinsics: List[List[List[float]]], ego_heading: float, ego_position: torch.Tensor
+) -> torch.Tensor:
+    """
+    根据相机外参、主车航向角和位置计算viewmats
+
+    Args:
+        extrinsics: 相机外参矩阵列表，每个元素为4x4的相机到车辆坐标系变换矩阵
+        ego_heading: 主车航向角，单位为弧度
+        ego_position: 主车在世界坐标系中的位置，已减去CENTER的torch.Tensor [x, y, z]
+
+    Returns:
+        viewmats: 世界坐标系到相机坐标系的变换矩阵，torch.Tensor类型，形状为[N, 4, 4]
+    """
+    # 计算旋转矩阵（绕Z轴旋转）
+    cos_h = torch.cos(torch.tensor(ego_heading, device=ego_position.device))
+    sin_h = torch.sin(torch.tensor(ego_heading, device=ego_position.device))
+
+    # 构建车辆到世界坐标系的变换矩阵 (T_vehicle_to_world)
+    ego_pose = torch.tensor(
+        [
+            [cos_h, -sin_h, 0.0, ego_position[0]],
+            [sin_h, cos_h, 0.0, ego_position[1]],
+            [0.0, 0.0, 1.0, ego_position[2]],
+            [0.0, 0.0, 0.0, 1.0],
+        ],
+        device=ego_position.device,
+        dtype=torch.float32,
+    )
+
+    viewmats_list = []
+
+    for ext_matrix in extrinsics:
+        # 将外参矩阵转换为torch.Tensor
+        ext = torch.tensor(ext_matrix, device=ego_position.device, dtype=torch.float32)
+
+        # 计算相机到世界坐标系的变换矩阵 c2w = T_vehicle_to_world @ T_camera_to_vehicle
+        c2w = ego_pose @ ext
+
+        # 计算世界坐标系到相机坐标系的变换矩阵 w2c = inv(c2w)
+        w2c = torch.linalg.inv(c2w)
+
+        viewmats_list.append(w2c)
+
+    return torch.stack(viewmats_list)
+
 
 # 创建缩放矩阵，仅缩放 f_x, f_y, c_x, c_y
+scale = 1
+img_width *= scale
+img_height *= scale
 scale_matrix = torch.tensor([[scale, 0, scale], [0, scale, scale], [0, 0, 1]], dtype=torch.float32, device=device)
 
-viewmats = torch.tensor(viewmats, dtype=torch.float32, device=device)
-Ks = torch.tensor(Ks, dtype=torch.float32, device=device) * scale_matrix
+# 使用函数计算viewmats和构造Ks
+viewmats = create_viewmats(extrinsics, ego_heading, ego_position)
+Ks = torch.tensor(intrinsics, dtype=torch.float32, device=device) * scale_matrix
 
 
 def save_colors_as_png(colors_tensor, output_dir="output"):
