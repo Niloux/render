@@ -5,7 +5,7 @@ from typing import Dict, List, Optional, Union
 
 import torch
 
-from .gaussian_component import GaussianComponent
+from .gs_component import GaussianComponent
 
 
 class GSModel:
