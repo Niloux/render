@@ -42,3 +42,5 @@ def calculate_bounding_sphere(ply_path: Path, scale: float = 1.0) -> tuple[torch
 
 lidar_pc_path = Path("points3D_lidar.ply")
 CENTER, RADIUS = calculate_bounding_sphere(lidar_pc_path)
+print(f"{CENTER=}")
+print(f"{RADIUS=}")
