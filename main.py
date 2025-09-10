@@ -21,17 +21,37 @@ print(f"{names=}")  # 010,016,034是效果还ok的, 下标对应2, 5, 9
 actor: GaussianComponent = actors[5]
 
 CENTER = torch.tensor([492.07811834, -147.71372052, -32.64144724], device=device)
-actor_position = torch.tensor([492.07811834, -147.71372052, -30.84144724], device=device)
 
+# 输入动态车辆的轨迹点和航向角
+actor_position = torch.tensor([492.07811834, -147.71372052, -30.84144724], device=device)
 actor_position = actor_position - CENTER
 actor_heading = 1.728
 
-# 合并背景和天空的高斯点参数
+# 合并背景和天空的高斯点参数(静态)
+# 计算每一帧的actor高斯点(动态)
+# 合并静态点云和动态点云
 means = torch.cat([background.get_xyz(), sky.get_xyz(), actor.get_xyz(heading=actor_heading, position=actor_position)])
 quats = torch.cat([background.get_quats(), sky.get_quats(), actor.get_quats(heading=actor_heading)])
 scales = torch.cat([background.get_scales(), sky.get_scales(), actor.get_scales()])
 opacities = torch.cat([background.get_opacities(), sky.get_opacities(), actor.get_opacities()])
 colors = torch.cat([background.get_colors(), sky.get_colors(), actor.get_colors()])
+
+# 输入相机内外参和分辨率
+extrinsics = [
+    [
+        [-9.703265255827278613e-03, -1.072251344945212778e-02, 9.998954317070867237e-01, 1.538897001763444461e00],
+        [-9.999406983533636328e-01, -4.840233586415512712e-03, -9.755609433373464007e-03, -2.432485553238794215e-02],
+        [4.944332104809027843e-03, -9.999307975275865124e-01, -1.067491151635933944e-02, 2.115484641063037685e00],
+        [0.0, 0.0, 0.0, 1.0],
+    ],
+]
+intrinsics = [[2049.873291015625, 0.0, 964.3667602539062], [0.0, 2049.873291015625, 644.5161743164062], [0.0, 0.0, 1.0]]
+# 输入主车的轨迹点和航向角
+ego_position = torch.tensor([498.28, -186.11, -31.95], device=device)
+ego_position = ego_position - CENTER
+ego_heading = 1.728
+
+# 计算当前帧的viewmats
 
 viewmats = [
     [
