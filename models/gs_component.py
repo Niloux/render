@@ -5,7 +5,10 @@ from typing import Optional
 
 import torch
 
-from lidar_prepare import CENTER, RADIUS
+from config import DEVICE, SKY_CENTER, SKY_RADIUS
+
+SKY_CENTER = torch.tensor(SKY_CENTER, device=DEVICE)
+SKY_RADIUS = torch.tensor(SKY_RADIUS, device=DEVICE)
 
 
 @dataclass
@@ -110,11 +113,11 @@ class GaussianComponent:
         if self.name == "background":
             return self.xyz
         elif self.name == "sky":
-            dists = torch.linalg.norm(self.xyz - CENTER, dim=1)
-            ratios = dists / (2 * RADIUS)
+            dists = torch.linalg.norm(self.xyz - SKY_CENTER, dim=1)
+            ratios = dists / (2 * SKY_RADIUS)
             # 将条件张量扩展到匹配xyz的形状 (N, 3)
             condition = (ratios < 1.0).unsqueeze(1)  # (N, 1) -> 广播到 (N, 3)
-            xyz = torch.where(condition, CENTER + (self.xyz - CENTER) / ratios.unsqueeze(1), self.xyz)
+            xyz = torch.where(condition, SKY_CENTER + (self.xyz - SKY_CENTER) / ratios.unsqueeze(1), self.xyz)
             return xyz
         else:
             # 完全使用torch操作，消除numpy转换开销
@@ -175,7 +178,7 @@ class GaussianComponent:
     def get_scales(self) -> torch.Tensor:  # [N, 3]
         if self.name == "sky":
             scales = torch.exp(self.scaling)
-            return torch.clamp(scales, max=RADIUS)
+            return torch.clamp(scales, max=SKY_RADIUS)
         else:
             return torch.exp(self.scaling)
 

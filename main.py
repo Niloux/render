@@ -6,12 +6,13 @@ import numpy as np
 import torch
 from PIL import Image
 
+from config import DEVICE, MAP_CENTER
 from models import GaussianComponent, GSModel
 from render_kernel import render
 
 os.environ["TORCH_CUDA_ARCH_LIST"] = "12.0"
 
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+device = DEVICE
 model = GSModel.load_from_pth("model.pth").to_device(device)
 background: GaussianComponent = model.get_component("background")
 sky: GaussianComponent = model.get_component("sky")
@@ -20,11 +21,11 @@ names = [actor.name for actor in actors]
 print(f"{names=}")  # 010,016,034是效果还ok的, 下标对应2, 5, 9
 actor: GaussianComponent = actors[5]
 
-CENTER = torch.tensor([492.07811834, -147.71372052, -32.64144724], device=device)
+MAP_CENTER = torch.tensor(MAP_CENTER, device=device)
 
 # 输入动态车辆的轨迹点和航向角
 actor_position = torch.tensor([492.07811834, -147.71372052, -30.84144724], device=device)
-actor_position = actor_position - CENTER
+actor_position = actor_position - MAP_CENTER
 actor_heading = 1.728
 
 # 合并背景和天空的高斯点参数(静态)
@@ -53,7 +54,7 @@ img_height = 1280
 
 # 输入主车的轨迹点和航向角
 ego_position = torch.tensor([498.28, -186.11, -31.95], device=device)
-ego_position = ego_position - CENTER
+ego_position = ego_position - MAP_CENTER
 ego_heading = 1.728
 
 
