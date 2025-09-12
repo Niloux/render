@@ -27,7 +27,7 @@ CONFIG = {
     "warmup_frames": 10,
     "benchmark_frames": 100,
     "save_first_frame": True,
-    "camera_count": 3,
+    "camera_count": 6,
     "resolution": (1920, 1280),
 }
 
@@ -61,11 +61,12 @@ def create_test_scenario() -> tuple[InitParams, FrameParams]:
     vehicles = [
         Vehicle([492.07811834, -147.71372052, -30.84144724], 1.728, "obj_034"),
         Vehicle([494.07811834, -149.71372052, -30.84144724], 1.728, "obj_016"),
+        Vehicle([489.07811834, -145.71372052, -30.84144724], 1.728, "obj_010"),
     ]
 
     # 创建帧参数
     frame_params = FrameParams(
-        ego_trajectory=[498.28, -186.11, -31.95], ego_yaw=1.728, env_vehicles=vehicles, timestamp=20250912
+        ego_trajectory=[498.28, -176.11, -31.95], ego_yaw=1.728, env_vehicles=vehicles, timestamp=20250912
     )
 
     return init_params, frame_params
