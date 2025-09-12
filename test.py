@@ -41,7 +41,24 @@ camera2 = Camera(
     1920,
     1280,
 )
-init_params = InitParams([camera1, camera2])
+camera3 = Camera(
+    "camera3",
+    [
+        [-9.703265255827278613e-03, -1.072251344945212778e-02, 9.998954317070867237e-01, 1.538897001763444461e00],
+        [
+            -9.999406983533636328e-01,
+            -4.840233586415512712e-03,
+            -9.755609433373464007e-03,
+            -2.432485553238794215e-02,
+        ],
+        [4.944332104809027843e-03, -9.999307975275865124e-01, -1.067491151635933944e-02, 2.115484641063037685e00],
+        [0.0, 0.0, 0.0, 1.0],
+    ],
+    [[2049.873291015625, 0.0, 964.3667602539062], [0.0, 2049.873291015625, 644.5161743164062], [0.0, 0.0, 1.0]],
+    1920,
+    1280,
+)
+init_params = InitParams([camera1, camera2, camera3])
 
 vehicle1 = Vehicle([492.07811834, -147.71372052, -30.84144724], 1.728, "obj_016")
 vehicle2 = Vehicle([494.07811834, -149.71372052, -30.84144724], 1.728, "obj_034")
@@ -55,13 +72,14 @@ def render_test():
     init_resp = render_mngr.init(init_params)
     print(f"{init_resp=}")
 
-    for i in range(100):
+    for i in range(10):
         t0 = time.time()
         frame_resp = render_mngr.render_frame(frame_params)
         t1 = time.time()
         print(f"渲染耗时: {t1 - t0:.6f}秒")
+        # print(f"{frame_resp=}")
 
-        if i == 99:
+        if i == 9:
             save_colors_as_png(frame_resp.images)
 
 
