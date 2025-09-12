@@ -13,19 +13,30 @@ SKY_RADIUS = torch.tensor(SKY_RADIUS, device=DEVICE)
 
 @dataclass
 class GaussianComponent:
-    """表示3DGS模型中的单个高斯点云组件。
+    """高斯点云组件数据类
 
-    包含位置、特征、缩放、旋转、透明度和语义信息。
+    用于管理和操作高斯点云的各种属性，包括位置、旋转、缩放、透明度和颜色特征。
+    提供了数据验证、内存使用统计和坐标变换等功能。
+
+    Linus式优化：添加变换缓存，避免重复计算
     """
 
-    name: str
-    xyz: torch.Tensor  # [N, 3] 位置坐标
-    feature_dc: torch.Tensor  # [N, 1, 3] 直流特征
-    feature_rest: torch.Tensor  # [N, 3, 3] 其余特征
-    scaling: torch.Tensor  # [N, 3] 缩放参数
-    rotation: torch.Tensor  # [N, 4] 旋转四元数
-    opacity: torch.Tensor  # [N, 1] 透明度
+    name: str  # 组件名称
+    xyz: torch.Tensor  # 位置 [N, 3]
+    feature_dc: torch.Tensor  # DC特征 [N, 1, 3]
+    feature_rest: torch.Tensor  # 其余特征 [N, K, 3]
+    scaling: torch.Tensor  # 对数缩放 [N, 3]
+    rotation: torch.Tensor  # 四元数旋转 [N, 4] (wxyz格式)
+    opacity: torch.Tensor  # logit透明度 [N, 1]
     semantic: Optional[torch.Tensor] = None  # [N, K] 语义信息
+
+    # Linus式优化：变换缓存，避免重复计算
+    _transform_cache: dict = None
+
+    def __post_init__(self):
+        """初始化变换缓存"""
+        if self._transform_cache is None:
+            self._transform_cache = {}
 
     @property
     def num_points(self) -> int:
@@ -103,6 +114,8 @@ class GaussianComponent:
     ) -> torch.Tensor:  # [N, 3]
         """获取变换后的3D坐标
 
+        Linus式优化：缓存旋转矩阵，避免重复计算
+
         Args:
             heading: 航向角（弧度），仅对object类型有效
             position: 世界坐标位置 [3] 的torch张量，仅对object类型有效
@@ -120,13 +133,18 @@ class GaussianComponent:
             xyz = torch.where(condition, SKY_CENTER + (self.xyz - SKY_CENTER) / ratios.unsqueeze(1), self.xyz)
             return xyz
         else:
-            # 完全使用torch操作，消除numpy转换开销
+            # Linus式优化：缓存旋转矩阵，避免重复计算
             device = self.xyz.device
+            cache_key = f"rot_matrix_{heading}"
 
-            # 构建Z轴旋转矩阵 [3, 3]
-            cos_h = torch.cos(torch.tensor(heading, device=device))
-            sin_h = torch.sin(torch.tensor(heading, device=device))
-            rot_matrix = torch.tensor([[cos_h, -sin_h, 0.0], [sin_h, cos_h, 0.0], [0.0, 0.0, 1.0]], device=device)
+            if cache_key not in self._transform_cache:
+                # 构建Z轴旋转矩阵 [3, 3]
+                cos_h = torch.cos(torch.tensor(heading, device=device))
+                sin_h = torch.sin(torch.tensor(heading, device=device))
+                rot_matrix = torch.tensor([[cos_h, -sin_h, 0.0], [sin_h, cos_h, 0.0], [0.0, 0.0, 1.0]], device=device)
+                self._transform_cache[cache_key] = rot_matrix
+            else:
+                rot_matrix = self._transform_cache[cache_key]
 
             # 向量化矩阵乘法：[N, 3] @ [3, 3] -> [N, 3]
             means_rotated = torch.matmul(self.xyz, rot_matrix.T)
@@ -135,6 +153,8 @@ class GaussianComponent:
 
     def get_quats(self, heading: Optional[float] = None) -> torch.Tensor:  # [N, 4]
         """获取变换后的四元数
+
+        Linus式优化：缓存四元数计算，避免重复计算
 
         Args:
             heading: 航向角（弧度），仅对object类型有效
@@ -145,14 +165,19 @@ class GaussianComponent:
         if self.name in ["background", "sky"]:
             return torch.nn.functional.normalize(self.rotation)
         else:
-            # 完全使用torch操作，消除numpy转换和循环
+            # Linus式优化：缓存四元数计算，避免重复计算
             device = self.rotation.device
+            cache_key = f"quat_heading_{heading}"
 
-            # 构建Z轴旋转四元数 (wxyz格式)
-            half_angle = heading * 0.5
-            cos_half = torch.cos(torch.tensor(half_angle, device=device))
-            sin_half = torch.sin(torch.tensor(half_angle, device=device))
-            quat_heading = torch.tensor([cos_half, 0.0, 0.0, sin_half], device=device)  # [w, x, y, z]
+            if cache_key not in self._transform_cache:
+                # 构建Z轴旋转四元数 (wxyz格式)
+                half_angle = heading * 0.5
+                cos_half = torch.cos(torch.tensor(half_angle, device=device))
+                sin_half = torch.sin(torch.tensor(half_angle, device=device))
+                quat_heading = torch.tensor([cos_half, 0.0, 0.0, sin_half], device=device)  # [w, x, y, z]
+                self._transform_cache[cache_key] = quat_heading
+            else:
+                quat_heading = self._transform_cache[cache_key]
 
             # 向量化四元数乘法：quat_heading * self.rotation
             # q1 * q2 = [w1*w2 - x1*x2 - y1*y2 - z1*z2,
