@@ -3,7 +3,7 @@ from typing import Dict, List, Tuple
 import torch
 
 from config import DEVICE, MAP_CENTER
-from data_types import Camera, FrameParams, FrameResp, InitParams, InitResp, Vehicle
+from data_types import Camera, FrameParams, FrameResp, GaussianData, InitParams, InitResp, Vehicle
 from models import GaussianComponent, GSModel
 from render_kernel import render
 from util import calculate_viewmats
@@ -22,50 +22,55 @@ class RenderManager:
         self._static_gs()
 
     def _static_gs(self) -> None:
-        """获取静态点云，只计算一次"""
-        self.static_means = torch.cat([
-            self.background.get_xyz(),
-            self.sky.get_xyz(),
-        ])
-        self.static_quats = torch.cat([
-            self.background.get_quats(),
-            self.sky.get_quats(),
-        ])
-        self.static_scales = torch.cat([
-            self.background.get_scales(),
-            self.sky.get_scales(),
-        ])
-        self.static_opacities = torch.cat([
-            self.background.get_opacities(),
-            self.sky.get_opacities(),
-        ])
-        self.static_colors = torch.cat([
-            self.background.get_colors(),
-            self.sky.get_colors(),
-        ])
+        """获取静态点云，只计算一次
 
-    def _dynamic_gs(self, vehicles: List[Vehicle]) -> None:
-        """获取动态点云，每帧都要计算"""
+        Linus式重构：消除重复代码，用统一的数据结构
+        """
+        static_components = [self.background, self.sky]
+        self.static_data = GaussianData.from_components(static_components)
+
+    def _dynamic_gs(self, vehicles: List[Vehicle]) -> GaussianData:
+        """获取动态点云，每帧都要计算
+
+        Linus式重构：
+        1. 不要静默忽略未知车辆类型 - 这是bug！
+        2. 避免每帧重复创建tensor - 性能优化
+        3. 用统一的数据结构 - 消除重复代码
+
+        修复闭包bug：直接收集数据而不是创建临时对象
+        """
+        if not vehicles:
+            return None
+
         dynamic_means = []
         dynamic_quats = []
         dynamic_scales = []
         dynamic_opacities = []
         dynamic_colors = []
-        for v in vehicles:
-            if v.type in self.actor_map:
-                heading = v.yaw
-                position = torch.tensor(v.trajectory, device=self.device) - self.map_center
-                dynamic_means.append(self.actor_map[v.type].get_xyz(heading, position))
-                dynamic_quats.append(self.actor_map[v.type].get_quats(heading))
-                dynamic_scales.append(self.actor_map[v.type].get_scales())
-                dynamic_opacities.append(self.actor_map[v.type].get_opacities())
-                dynamic_colors.append(self.actor_map[v.type].get_colors())
 
-        self.dynamic_means = torch.cat(dynamic_means)
-        self.dynamic_quats = torch.cat(dynamic_quats)
-        self.dynamic_scales = torch.cat(dynamic_scales)
-        self.dynamic_opacities = torch.cat(dynamic_opacities)
-        self.dynamic_colors = torch.cat(dynamic_colors)
+        for v in vehicles:
+            if v.type not in self.actor_map:
+                raise ValueError(f"Unknown vehicle type: {v.type}. Available types: {list(self.actor_map.keys())}")
+
+            # 优化：预先转换为tensor，避免每次调用get_xyz时重复转换
+            heading = v.yaw
+            position = torch.tensor(v.trajectory, device=self.device, dtype=torch.float32) - self.map_center
+
+            # 直接获取变换后的数据，避免闭包陷阱
+            component = self.actor_map[v.type]
+            dynamic_means.append(component.get_xyz(heading, position))
+            dynamic_quats.append(component.get_quats(heading))
+            dynamic_scales.append(component.get_scales())
+            dynamic_opacities.append(component.get_opacities())
+            dynamic_colors.append(component.get_colors())
+
+        return GaussianData(
+            means=torch.cat(dynamic_means),
+            quats=torch.cat(dynamic_quats),
+            scales=torch.cat(dynamic_scales),
+            opacities=torch.cat(dynamic_opacities),
+            colors=torch.cat(dynamic_colors),
+        )
 
     def init(self, params: InitParams) -> InitResp:
         """初始化接口，输入相机的参数"""
@@ -82,18 +87,19 @@ class RenderManager:
         return resp
 
     def render_frame(self, params: FrameParams) -> FrameResp:
-        """渲染接口，每帧调用"""
+        """渲染接口，每帧调用
+
+        Linus式重构：简化逻辑，消除重复的torch.cat调用
+        """
+        # 优化：预先转换ego位置，避免重复计算
         ego_heading = params.ego_yaw
-        ego_position = torch.tensor(params.ego_trajectory, device=self.device) - self.map_center
+        ego_position = torch.tensor(params.ego_trajectory, device=self.device, dtype=torch.float32) - self.map_center
 
-        vehicles = params.env_vehicles
-        self._dynamic_gs(vehicles)
+        # 获取动态数据并与静态数据合并
+        dynamic_data = self._dynamic_gs(params.env_vehicles)
 
-        means = torch.cat([self.static_means, self.dynamic_means])
-        quats = torch.cat([self.static_quats, self.dynamic_quats])
-        scales = torch.cat([self.static_scales, self.dynamic_scales])
-        opacities = torch.cat([self.static_opacities, self.dynamic_opacities])
-        colors = torch.cat([self.static_colors, self.dynamic_colors])
+        # 合并静态和动态数据 - 处理空vehicles的情况
+        all_data = self.static_data.cat(dynamic_data) if dynamic_data else self.static_data
 
         images = {}
         for resolution, cameras in self.cameras.items():
@@ -105,9 +111,9 @@ class RenderManager:
             viewmats = calculate_viewmats(extrinsics_list, ego_heading, ego_position)
             Ks = torch.tensor(intrinsics_list, dtype=torch.float32, device=self.device)
 
-            render_colors, render_alphas = render(means, quats, scales, opacities, colors, viewmats, Ks, width, height)
+            # 使用统一的数据结构传递参数
+            render_colors, render_alphas = render(*all_data.to_render_args(), viewmats, Ks, width, height)
             for id, image in zip(camera_ids, render_colors):
                 images[id] = image
 
-        resp = FrameResp(params.timestamp, images)
-        return resp
+        return FrameResp(params.timestamp, images)

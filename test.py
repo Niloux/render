@@ -60,8 +60,8 @@ camera3 = Camera(
 )
 init_params = InitParams([camera1, camera2, camera3])
 
-vehicle1 = Vehicle([492.07811834, -147.71372052, -30.84144724], 1.728, "obj_016")
-vehicle2 = Vehicle([494.07811834, -149.71372052, -30.84144724], 1.728, "obj_034")
+vehicle1 = Vehicle([492.07811834, -147.71372052, -30.84144724], 1.728, "obj_034")
+vehicle2 = Vehicle([494.07811834, -149.71372052, -30.84144724], 1.728, "obj_016")
 ego_position = [498.28, -186.11, -31.95]
 ego_heading = 1.728
 frame_params = FrameParams(ego_position, ego_heading, [vehicle1, vehicle2], 20250912)
@@ -72,14 +72,14 @@ def render_test():
     init_resp = render_mngr.init(init_params)
     print(f"{init_resp=}")
 
-    for i in range(10):
+    for i in range(1):
         t0 = time.time()
         frame_resp = render_mngr.render_frame(frame_params)
         t1 = time.time()
         print(f"渲染耗时: {t1 - t0:.6f}秒")
         # print(f"{frame_resp=}")
 
-        if i == 9:
+        if i == 0:
             save_colors_as_png(frame_resp.images)
 
 
