@@ -72,7 +72,7 @@ def render_test():
     init_resp = render_mngr.init(init_params)
     print(f"{init_resp=}")
 
-    for i in range(1):
+    for i in range(10):
         t0 = time.time()
         frame_resp = render_mngr.render_frame(frame_params)
         t1 = time.time()
