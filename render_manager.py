@@ -10,9 +10,9 @@ from util import calculate_viewmats
 
 
 class RenderManager:
-    def __init__(self) -> None:
+    def __init__(self, model: str = "model.path") -> None:
         self.device = DEVICE
-        self.model = GSModel.load_from_pth("model.pth").to_device(DEVICE)
+        self.model = GSModel.load_from_pth(model).to_device(DEVICE)
         self.background: GaussianComponent = self.model.get_component("background")
         self.sky: GaussianComponent = self.model.get_component("sky")
         self.actors: List[GaussianComponent] = self.model.get_components_by_type("obj")
@@ -57,9 +57,9 @@ class RenderManager:
                 position = torch.tensor(v.trajectory, device=self.device) - self.map_center
                 dynamic_means.append(self.actor_map[v.type].get_xyz(heading, position))
                 dynamic_quats.append(self.actor_map[v.type].get_quats(heading))
-                dynamic_scales.append(self.actor_map[v.type].get_scales)
-                dynamic_opacities.append(self.actor_map[v.type].get_opacities)
-                dynamic_colors.append(self.actor_map[v.type].get_colors)
+                dynamic_scales.append(self.actor_map[v.type].get_scales())
+                dynamic_opacities.append(self.actor_map[v.type].get_opacities())
+                dynamic_colors.append(self.actor_map[v.type].get_colors())
 
         self.dynamic_means = torch.cat(dynamic_means)
         self.dynamic_quats = torch.cat(dynamic_quats)
@@ -89,11 +89,11 @@ class RenderManager:
         vehicles = params.env_vehicles
         self._dynamic_gs(vehicles)
 
-        means = torch.cat(self.static_means, self.dynamic_means)
-        quats = torch.cat(self.static_quats, self.dynamic_quats)
-        scales = torch.cat(self.static_scales, self.dynamic_scales)
-        opacities = torch.cat(self.static_opacities, self.dynamic_opacities)
-        colors = torch.cat(self.static_colors, self.dynamic_colors)
+        means = torch.cat([self.static_means, self.dynamic_means])
+        quats = torch.cat([self.static_quats, self.dynamic_quats])
+        scales = torch.cat([self.static_scales, self.dynamic_scales])
+        opacities = torch.cat([self.static_opacities, self.dynamic_opacities])
+        colors = torch.cat([self.static_colors, self.dynamic_colors])
 
         images = {}
         for resolution, cameras in self.cameras.items():

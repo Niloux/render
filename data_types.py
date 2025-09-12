@@ -21,7 +21,7 @@ class InitParams:
 @dataclass
 class InitResp:
     init_status: bool
-    error_msg: Optional[str]
+    error_msg: Optional[str] = None
 
 
 @dataclass
@@ -43,4 +43,4 @@ class FrameParams:
 class FrameResp:
     timestamp: int
     images: Dict[str, torch.Tensor]
-    error_msg: Optional[str]
+    error_msg: Optional[str] = None

@@ -1,5 +1,5 @@
 import os
-from typing import List
+from typing import Dict, List
 
 import numpy as np
 import torch
@@ -53,33 +53,18 @@ def calculate_viewmats(
     return torch.stack(viewmats_list)
 
 
-def save_colors_as_png(colors_tensor, output_dir="output"):
+def save_colors_as_png(image: Dict[str, torch.Tensor], output_dir="output"):
     """
     将渲染的colors张量保存为PNG图像
 
     Args:
-        colors_tensor: 形状为 [N_views, H, W, C] 的张量
+        image: torch.Tensor形状为 [H, W, C] 的张量,键值为camera_id
         output_dir: 输出目录
     """
     os.makedirs(output_dir, exist_ok=True)
-
-    # 将张量移到CPU并转换为numpy
-    colors_np = colors_tensor.detach().cpu().numpy()
-    n_views, height, width, channels = colors_np.shape
-
-    print(f"Colors张量形状: {colors_np.shape}")
-    print(f"视角数量: {n_views}, 图像尺寸: {height}x{width}, 通道数: {channels}")
-
-    for view_idx in range(n_views):
-        # 获取单个视角的图像数据
-        view_colors = colors_np[view_idx]  # [H, W, C]
-
-        # 如果通道数大于3，取前3个通道作为RGB
-        if channels > 3:
-            rgb_colors = view_colors[:, :, :3]
-            print(f"视角 {view_idx}: 使用前3个通道作为RGB")
-        else:
-            rgb_colors = view_colors
+    for camera_id, colors_tensor in image.items():
+        # 将张量移到CPU并转换为numpy
+        rgb_colors = colors_tensor.detach().cpu().numpy()
 
         # 数值范围处理：假设输出在[0,1]范围内，转换到[0,255]
         rgb_colors = np.clip(rgb_colors, 0, 1)
@@ -87,10 +72,5 @@ def save_colors_as_png(colors_tensor, output_dir="output"):
 
         # 创建PIL图像并保存
         img = Image.fromarray(rgb_colors)
-        output_path = os.path.join(output_dir, f"view_{view_idx:02d}.png")
+        output_path = os.path.join(output_dir, f"{camera_id}.png")
         img.save(output_path)
-        print(f"保存视角 {view_idx} 到: {output_path}")
-
-        # 保存统计信息
-        print(f"  - 像素值范围: [{rgb_colors.min()}, {rgb_colors.max()}]")
-        print(f"  - 平均像素值: {rgb_colors.mean():.3f}")
