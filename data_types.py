@@ -44,11 +44,7 @@ class FrameParams:
 
 @dataclass
 class GaussianData:
-    """统一管理高斯点云的5种属性数据结构
-
-    这是Linus式"好品味"的体现：用一个统一的数据结构
-    替代5个平行数组，消除重复代码和特殊情况处理。
-    """
+    """统一管理高斯点云的5种属性数据结构"""
 
     means: torch.Tensor  # [N, 3] 位置
     quats: torch.Tensor  # [N, 4] 四元数
@@ -70,10 +66,7 @@ class GaussianData:
 
     @classmethod
     def from_components(cls, components: List["GaussianComponent"]) -> Optional["GaussianData"]:
-        """从GaussianComponent列表创建GaussianData
-
-        这个方法消除了_static_gs和_dynamic_gs中的重复代码
-        """
+        """从GaussianComponent列表创建GaussianData"""
         if not components:
             return None
 

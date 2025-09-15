@@ -1,12 +1,5 @@
 #!/usr/bin/env python3
-"""渲染性能测试脚本
-
-Linus式规范测试：
-1. 消除重复代码 - DRY原则
-2. 科学的benchmark方法 - 预热+统计分析
-3. 配置化参数 - 避免硬编码
-4. 错误处理和资源管理
-"""
+"""渲染性能测试脚本"""
 
 import os
 import statistics
@@ -47,7 +40,7 @@ STANDARD_INTRINSICS = [
 
 
 def create_test_cameras(count: int, width: int, height: int) -> List[Camera]:
-    """创建测试相机列表，消除重复代码"""
+    """创建测试相机列表"""
     return [Camera(f"camera{i + 1}", STANDARD_EXTRINSICS, STANDARD_INTRINSICS, width, height) for i in range(count)]
 
 
@@ -73,18 +66,18 @@ def create_test_scenario() -> tuple[InitParams, FrameParams]:
 
 
 def run_benchmark(render_manager: RenderManager, frame_params: FrameParams) -> dict:
-    """运行科学的benchmark测试
+    """benchmark测试
 
     返回详细的性能统计数据
     """
-    print("🔥 开始预热阶段...")
+    print("开始预热阶段...")
     # 预热阶段 - 避免首次运行的初始化开销
     for i in range(CONFIG["warmup_frames"]):
         render_manager.render_frame(frame_params)
         if i % 5 == 0:
             print(f"预热进度: {i + 1}/{CONFIG['warmup_frames']}")
 
-    print("📊 开始性能测试...")
+    print("开始性能测试...")
     # 正式测试阶段
     render_times = []
 
@@ -99,7 +92,7 @@ def run_benchmark(render_manager: RenderManager, frame_params: FrameParams) -> d
         # 保存第一帧图像
         if i == 0 and CONFIG["save_first_frame"]:
             save_colors_as_png(frame_resp.images)
-            print("✅ 第一帧图像已保存")
+            print("第一帧图像已保存")
 
         # 进度显示
         if (i + 1) % 20 == 0:
@@ -120,7 +113,7 @@ def run_benchmark(render_manager: RenderManager, frame_params: FrameParams) -> d
 def print_benchmark_results(stats: dict) -> None:
     """打印格式化的benchmark结果"""
     print("\n" + "=" * 50)
-    print("🎯 渲染性能测试结果")
+    print("渲染性能测试结果")
     print("=" * 50)
     print(f"总帧数: {stats['total_frames']}")
     print(f"平均耗时: {stats['mean_ms']:.2f}ms")
@@ -140,7 +133,7 @@ def main() -> None:
         if not model_path.exists():
             raise FileNotFoundError(f"模型文件不存在: {model_path}")
 
-        print(f"🚀 初始化渲染管理器: {model_path}")
+        print(f"初始化渲染管理器: {model_path}")
         render_manager = RenderManager(str(model_path))
 
         # 创建测试场景
@@ -151,8 +144,8 @@ def main() -> None:
         if not init_resp.init_status:
             raise RuntimeError("渲染器初始化失败")
 
-        print("✅ 渲染器初始化成功")
-        print(f"📋 测试配置: {CONFIG['camera_count']}个相机, {CONFIG['resolution']}分辨率")
+        print("渲染器初始化成功")
+        print(f"测试配置: {CONFIG['camera_count']}个相机, {CONFIG['resolution']}分辨率")
 
         # 运行benchmark
         stats = run_benchmark(render_manager, frame_params)
@@ -161,7 +154,7 @@ def main() -> None:
         print_benchmark_results(stats)
 
     except Exception as e:
-        print(f"❌ 测试失败: {e}")
+        print(f"测试失败: {e}")
         raise
 
 
