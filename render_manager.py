@@ -98,7 +98,7 @@ class RenderManager:
     def init(self, params: InitParams) -> InitResp:
         """初始化接口，输入相机的参数
 
-        Linus式优化：预计算所有相机数据，消除运行时查找和转换
+        预计算所有相机数据，消除运行时查找和转换
         """
         # 按照分辨率对输入camera进行分类
         grouped = {}
@@ -109,7 +109,7 @@ class RenderManager:
             grouped[resolution].append(i)
         self.cameras: Dict[Tuple[int, int], List[Camera]] = grouped
 
-        # Linus式优化：预计算所有相机的内参和外参tensor，消除运行时转换
+        # 计算所有相机的内参和外参tensor，消除运行时转换
         self.camera_data = {}
         for resolution, cameras in self.cameras.items():
             width, height = resolution
@@ -135,19 +135,19 @@ class RenderManager:
 
     def render_frame(self, params: FrameParams) -> FrameResp:
         """渲染接口，每帧调用"""
-        # 输入验证 - 快速失败原则
+        # 输入验证
         if not params.ego_trajectory or len(params.ego_trajectory) != 3:
             raise ValueError(f"Invalid ego_trajectory: {params.ego_trajectory}")
 
-        # 一次性转换ego数据，避免重复计算
+        # 转换ego
         ego_heading = params.ego_yaw
         ego_position = torch.tensor(params.ego_trajectory, device=self.device, dtype=torch.float32) - self.map_center
 
-        # Linus式优化：直接更新预分配buffer的动态部分
+        # 预分配buffer的动态部分
         dynamic_points = self._update_dynamic_buffer(params.env_vehicles)
         total_points = self.static_points + dynamic_points
 
-        # Linus式优化：直接使用预分配buffer，避免创建临时对象和tuple解包
+        # 直接使用预分配buffer，避免创建临时对象和tuple解包
         render_means = self.render_buffer["means"][:total_points]
         render_quats = self.render_buffer["quats"][:total_points]
         render_scales = self.render_buffer["scales"][:total_points]
@@ -155,7 +155,7 @@ class RenderManager:
         render_colors = self.render_buffer["colors"][:total_points]
 
         images = {}
-        # Linus式优化：使用预计算的相机数据，零查找开销
+        # 使用预计算的相机数据，零查找开销
         for resolution, cam_data in self.camera_data.items():
             # 直接使用预计算的数据，无需运行时转换
             camera_ids = cam_data["camera_ids"]
