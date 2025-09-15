@@ -18,7 +18,6 @@ class GaussianComponent:
     用于管理和操作高斯点云的各种属性，包括位置、旋转、缩放、透明度和颜色特征。
     提供了数据验证、内存使用统计和坐标变换等功能。
 
-    Linus式优化：添加变换缓存，避免重复计算
     """
 
     name: str  # 组件名称
@@ -30,7 +29,7 @@ class GaussianComponent:
     opacity: torch.Tensor  # logit透明度 [N, 1]
     semantic: Optional[torch.Tensor] = None  # [N, K] 语义信息
 
-    # Linus式优化：变换缓存，避免重复计算
+    # 变换缓存，避免重复计算
     _transform_cache: dict = None
 
     def __post_init__(self):
@@ -114,7 +113,7 @@ class GaussianComponent:
     ) -> torch.Tensor:  # [N, 3]
         """获取变换后的3D坐标
 
-        Linus式优化：缓存旋转矩阵，避免重复计算
+        缓存旋转矩阵，避免重复计算
 
         Args:
             heading: 航向角（弧度），仅对object类型有效
@@ -154,7 +153,7 @@ class GaussianComponent:
     def get_quats(self, heading: Optional[float] = None) -> torch.Tensor:  # [N, 4]
         """获取变换后的四元数
 
-        Linus式优化：缓存四元数计算，避免重复计算
+        缓存四元数计算，避免重复计算
 
         Args:
             heading: 航向角（弧度），仅对object类型有效

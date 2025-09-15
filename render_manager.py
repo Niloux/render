@@ -22,7 +22,7 @@ class RenderManager:
         self._setup_render_buffers()
 
     def _setup_render_buffers(self) -> None:
-        """Linus式优化：预分配渲染buffers，消除每帧内存分配
+        """预分配渲染buffers，消除每帧内存分配
 
         预计算静态数据大小，为动态数据预留最大可能空间
         这样每帧只需要更新动态部分，零内存分配
@@ -56,7 +56,7 @@ class RenderManager:
         self.render_buffer["colors"][: self.static_points] = self.static_data.colors
 
     def _update_dynamic_buffer(self, vehicles: List[Vehicle]) -> int:
-        """Linus式优化：直接更新预分配buffer的动态部分
+        """直接更新预分配buffer的动态部分
 
         返回动态点数，避免创建临时GaussianData对象
         静态数据永远不变，只更新buffer的动态部分
