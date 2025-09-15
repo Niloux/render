@@ -29,14 +29,6 @@ class GaussianComponent:
     opacity: torch.Tensor  # logit透明度 [N, 1]
     semantic: Optional[torch.Tensor] = None  # [N, K] 语义信息
 
-    # 变换缓存，避免重复计算
-    _transform_cache: dict = None
-
-    def __post_init__(self):
-        """初始化变换缓存"""
-        if self._transform_cache is None:
-            self._transform_cache = {}
-
     @property
     def num_points(self) -> int:
         """获取点云数量。"""
@@ -113,8 +105,6 @@ class GaussianComponent:
     ) -> torch.Tensor:  # [N, 3]
         """获取变换后的3D坐标
 
-        缓存旋转矩阵，避免重复计算
-
         Args:
             heading: 航向角（弧度），仅对object类型有效
             position: 世界坐标位置 [3] 的torch张量，仅对object类型有效
@@ -132,18 +122,11 @@ class GaussianComponent:
             xyz = torch.where(condition, SKY_CENTER + (self.xyz - SKY_CENTER) / ratios.unsqueeze(1), self.xyz)
             return xyz
         else:
-            # Linus式优化：缓存旋转矩阵，避免重复计算
+            # 计算旋转矩阵，无需缓存
             device = self.xyz.device
-            cache_key = f"rot_matrix_{heading}"
-
-            if cache_key not in self._transform_cache:
-                # 构建Z轴旋转矩阵 [3, 3]
-                cos_h = torch.cos(torch.tensor(heading, device=device))
-                sin_h = torch.sin(torch.tensor(heading, device=device))
-                rot_matrix = torch.tensor([[cos_h, -sin_h, 0.0], [sin_h, cos_h, 0.0], [0.0, 0.0, 1.0]], device=device)
-                self._transform_cache[cache_key] = rot_matrix
-            else:
-                rot_matrix = self._transform_cache[cache_key]
+            cos_h = torch.cos(torch.tensor(heading, device=device))
+            sin_h = torch.sin(torch.tensor(heading, device=device))
+            rot_matrix = torch.tensor([[cos_h, -sin_h, 0.0], [sin_h, cos_h, 0.0], [0.0, 0.0, 1.0]], device=device)
 
             # 向量化矩阵乘法：[N, 3] @ [3, 3] -> [N, 3]
             means_rotated = torch.matmul(self.xyz, rot_matrix.T)
@@ -152,8 +135,6 @@ class GaussianComponent:
 
     def get_quats(self, heading: Optional[float] = None) -> torch.Tensor:  # [N, 4]
         """获取变换后的四元数
-
-        缓存四元数计算，避免重复计算
 
         Args:
             heading: 航向角（弧度），仅对object类型有效
@@ -164,19 +145,12 @@ class GaussianComponent:
         if self.name in ["background", "sky"]:
             return torch.nn.functional.normalize(self.rotation)
         else:
-            # Linus式优化：缓存四元数计算，避免重复计算
+            # 直接计算四元数，无需缓存
             device = self.rotation.device
-            cache_key = f"quat_heading_{heading}"
-
-            if cache_key not in self._transform_cache:
-                # 构建Z轴旋转四元数 (wxyz格式)
-                half_angle = heading * 0.5
-                cos_half = torch.cos(torch.tensor(half_angle, device=device))
-                sin_half = torch.sin(torch.tensor(half_angle, device=device))
-                quat_heading = torch.tensor([cos_half, 0.0, 0.0, sin_half], device=device)  # [w, x, y, z]
-                self._transform_cache[cache_key] = quat_heading
-            else:
-                quat_heading = self._transform_cache[cache_key]
+            half_angle = heading * 0.5
+            cos_half = torch.cos(torch.tensor(half_angle, device=device))
+            sin_half = torch.sin(torch.tensor(half_angle, device=device))
+            quat_heading = torch.tensor([cos_half, 0.0, 0.0, sin_half], device=device)  # [w, x, y, z]
 
             # 向量化四元数乘法：quat_heading * self.rotation
             # q1 * q2 = [w1*w2 - x1*x2 - y1*y2 - z1*z2,

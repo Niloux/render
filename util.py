@@ -5,30 +5,12 @@ import numpy as np
 import torch
 from PIL import Image
 
-# Linus式优化：全局缓存，避免重复计算
-_viewmats_cache = {}
-
-
-def precompute_camera_transforms(extrinsics: List[List[List[float]]], device: torch.device) -> torch.Tensor:
-    """
-    预计算相机外参tensor，只需要在初始化时调用一次
-
-    Linus式优化：消除每帧的tensor转换开销
-    """
-    ext_tensors = []
-    for ext_matrix in extrinsics:
-        ext = torch.tensor(ext_matrix, device=device, dtype=torch.float32)
-        ext_tensors.append(ext)
-    return torch.stack(ext_tensors)
-
 
 def calculate_viewmats(
     extrinsics: List[List[List[float]]], ego_heading: float, ego_position: torch.Tensor
 ) -> torch.Tensor:
     """
     根据相机外参、主车航向角和位置计算viewmats
-
-    Linus式优化：缓存旋转计算，预计算外参tensor
 
     Args:
         extrinsics: 相机外参矩阵列表，每个元素为4x4的相机到车辆坐标系变换矩阵
@@ -40,37 +22,32 @@ def calculate_viewmats(
     """
     device = ego_position.device
 
-    # Linus式优化：缓存外参tensor转换
-    ext_cache_key = f"ext_{id(extrinsics)}_{device}"
-    if ext_cache_key not in _viewmats_cache:
-        _viewmats_cache[ext_cache_key] = precompute_camera_transforms(extrinsics, device)
-    ext_tensors = _viewmats_cache[ext_cache_key]
+    # 直接转换外参为tensor
+    ext_tensors = []
+    for ext_matrix in extrinsics:
+        ext = torch.tensor(ext_matrix, device=device, dtype=torch.float32)
+        ext_tensors.append(ext)
+    ext_tensors = torch.stack(ext_tensors)
 
-    # Linus式优化：缓存旋转矩阵计算
-    rot_cache_key = f"ego_rot_{ego_heading}_{device}"
-    if rot_cache_key not in _viewmats_cache:
-        cos_h = torch.cos(torch.tensor(ego_heading, device=device))
-        sin_h = torch.sin(torch.tensor(ego_heading, device=device))
-        ego_rot = torch.tensor(
-            [
-                [cos_h, -sin_h, 0.0, 0.0],
-                [sin_h, cos_h, 0.0, 0.0],
-                [0.0, 0.0, 1.0, 0.0],
-                [0.0, 0.0, 0.0, 1.0],
-            ],
-            device=device,
-            dtype=torch.float32,
-        )
-        _viewmats_cache[rot_cache_key] = ego_rot
-    else:
-        ego_rot = _viewmats_cache[rot_cache_key]
+    # 直接计算旋转矩阵
+    cos_h = torch.cos(torch.tensor(ego_heading, device=device))
+    sin_h = torch.sin(torch.tensor(ego_heading, device=device))
+    ego_rot = torch.tensor(
+        [
+            [cos_h, -sin_h, 0.0, 0.0],
+            [sin_h, cos_h, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+        ],
+        device=device,
+        dtype=torch.float32,
+    )
 
-    # 构建完整的ego pose（只更新位置部分）
+    # 构建完整的ego pose
     ego_pose = ego_rot.clone()
     ego_pose[:3, 3] = ego_position
 
     # 向量化计算所有相机的viewmats
-    # c2w = ego_pose @ ext_tensors  # [N, 4, 4]
     c2w = torch.matmul(ego_pose.unsqueeze(0), ext_tensors)  # [N, 4, 4]
 
     # 批量计算逆矩阵
