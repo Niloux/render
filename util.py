@@ -1,4 +1,5 @@
 import os
+import time
 from typing import Dict, List
 
 import numpy as np
@@ -67,7 +68,14 @@ def save_colors_as_png(image: Dict[str, torch.Tensor], output_dir="output"):
     os.makedirs(output_dir, exist_ok=True)
     for camera_id, colors_tensor in image.items():
         # 将张量移到CPU并转换为numpy
-        rgb_colors = colors_tensor.detach().cpu().numpy()
+        t0 = time.time()
+        pinned_cpu = torch.empty_like(colors_tensor, device="cpu", pin_memory=True)
+        pinned_cpu.copy_(colors_tensor, non_blocking=True)
+        rgb_colors = pinned_cpu.detach().numpy()
+        torch.cuda.synchronize()
+        t1 = time.time()
+        print(f"拷贝耗时: {t1 - t0:.6f}")
+        # rgb_colors = colors_tensor.detach().cpu().numpy()
 
         # 数值范围处理：假设输出在[0,1]范围内，转换到[0,255]
         rgb_colors = np.clip(rgb_colors, 0, 1)
