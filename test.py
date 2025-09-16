@@ -5,7 +5,6 @@ import os
 import statistics
 import time
 from pathlib import Path
-from typing import List
 
 from data_types import Camera
 from render_manager import FrameParams, InitParams, RenderManager, Vehicle
@@ -39,7 +38,7 @@ STANDARD_INTRINSICS = [
 ]
 
 
-def create_test_cameras(count: int, width: int, height: int) -> List[Camera]:
+def create_test_cameras(count: int, width: int, height: int) -> list[Camera]:
     """创建测试相机列表"""
     return [Camera(f"camera{i + 1}", STANDARD_EXTRINSICS, STANDARD_INTRINSICS, width, height) for i in range(count)]
 
