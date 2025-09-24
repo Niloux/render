@@ -17,31 +17,12 @@ class Camera:
 
     @classmethod
     def from_json(cls, data: Dict) -> "Camera":
-        """从JSON字典创建Camera对象
-
-        Args:
-            data: 包含camera信息的字典，格式如：
-                {
-                    "id": "cam1",
-                    "extrinsics": [[1.0, 0.0, 0.0, 0.0], ...],  # 4x4矩阵
-                    "intrinsics": [[1000.0, 0.0, 960.0], ...],   # 3x3矩阵
-                    "width": 1920,
-                    "height": 1080
-                }
-
-        Returns:
-            Camera对象
-
-        Raises:
-            ValueError: 当数据格式不正确时
-        """
-        # 验证必需字段
+        """从JSON字典创建Camera对象"""
         required_fields = ["id", "extrinsics", "intrinsics", "width", "height"]
         missing_fields = [field for field in required_fields if field not in data]
         if missing_fields:
             raise ValueError(f"Missing required fields: {missing_fields}")
 
-        # 验证矩阵维度
         extrinsics = data["extrinsics"]
         intrinsics = data["intrinsics"]
 
@@ -59,6 +40,16 @@ class Camera:
             height=int(data["height"]),
         )
 
+    def to_json(self) -> Dict:
+        """将Camera对象转换为JSON字典"""
+        return {
+            "id": self.id,
+            "extrinsics": self.extrinsics,
+            "intrinsics": self.intrinsics,
+            "width": self.width,
+            "height": self.height,
+        }
+
 
 @dataclass
 class InitParams:
@@ -66,23 +57,7 @@ class InitParams:
 
     @classmethod
     def from_json(cls, data: Dict) -> "InitParams":
-        """从JSON字典创建InitParams对象
-
-        Args:
-            data: 包含初始化参数的字典，格式如：
-                {
-                    "cameras": [
-                        {"id": "cam1", "extrinsics": [...], ...},
-                        {"id": "cam2", "extrinsics": [...], ...}
-                    ]
-                }
-
-        Returns:
-            InitParams对象
-
-        Raises:
-            ValueError: 当数据格式不正确时
-        """
+        """从JSON字典创建InitParams对象"""
         if "cameras" not in data:
             raise ValueError("Missing required field: cameras")
 
@@ -92,6 +67,12 @@ class InitParams:
 
         cameras = [Camera.from_json(cam_data) for cam_data in cameras_data]
         return cls(cameras=cameras)
+
+    def to_json(self) -> Dict:
+        """将InitParams对象转换为JSON字典"""
+        return {
+            "cameras": [cam.to_json() for cam in self.cameras]
+        }
 
 
 @dataclass

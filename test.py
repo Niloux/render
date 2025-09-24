@@ -6,20 +6,20 @@ import statistics
 import time
 from pathlib import Path
 
-from data_types import Camera
-from render_manager import FrameParams, InitParams, RenderManager, Vehicle
-from util import save_colors_as_png
-
+from .data_types import Camera
+from .render_manager import FrameParams, InitParams, RenderManager, Vehicle
+from .util import save_colors_as_png
+import pprint
 # 环境配置
 os.environ["TORCH_CUDA_ARCH_LIST"] = "12.0"
 
 # 测试配置
 CONFIG = {
-    "model_path": "/home/saimo/work/render/model.pth",
+    "model_path": "/home/app/wangxiaolei/3dgs/3DGS/src/3dgs_node/render/model.pth",
     "warmup_frames": 10,
     "benchmark_frames": 100,
     "save_first_frame": True,
-    "camera_count": 6,
+    "camera_count": 1,
     "resolution": (1920, 1280),
 }
 
@@ -83,6 +83,7 @@ def run_benchmark(render_manager: RenderManager, frame_params: FrameParams) -> d
     for i in range(CONFIG["benchmark_frames"]):
         t0 = time.perf_counter()  # 使用高精度计时器
         frame_resp = render_manager.render_frame(frame_params)
+
         t1 = time.perf_counter()
 
         render_time = t1 - t0
@@ -137,6 +138,10 @@ def main() -> None:
 
         # 创建测试场景
         init_params, frame_params = create_test_scenario()
+
+
+        pprint.pprint(init_params)
+        pprint.pprint(frame_params)
 
         # 初始化渲染器
         init_resp = render_manager.init(init_params)

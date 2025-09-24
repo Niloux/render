@@ -2,11 +2,11 @@ from typing import Dict, List, Tuple
 
 import torch
 
-from config import DEVICE, MAP_CENTER
-from data_types import Camera, FrameParams, FrameResp, GaussianData, InitParams, InitResp, Vehicle
-from models import GaussianComponent, GSModel
-from render_kernel import render
-from util import calculate_viewmats
+from .config import DEVICE, MAP_CENTER
+from .data_types import Camera, FrameParams, FrameResp, GaussianData, InitParams, InitResp, Vehicle
+from .models import GaussianComponent, GSModel
+from .render_kernel import render
+from .util import calculate_viewmats
 
 
 class RenderManager:
