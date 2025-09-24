@@ -6,8 +6,8 @@ import statistics
 import time
 from pathlib import Path
 
-from data_types import Camera
-from render_manager import FrameParams, InitParams, RenderManager, Vehicle
+from data_types import Camera, Vehicle
+from render_manager import FrameParams, InitParams, RenderManager
 from util import save_colors_as_png
 
 # 环境配置
@@ -20,21 +20,21 @@ CONFIG = {
     "benchmark_frames": 100,
     "save_first_frame": True,
     "camera_count": 6,
-    "resolution": (1920, 1280),
+    "resolution": (1600, 896),
 }
 
 # 标准相机参数
 STANDARD_EXTRINSICS = [
-    [-9.703265255827278613e-03, -1.072251344945212778e-02, 9.998954317070867237e-01, 1.538897001763444461e00],
-    [-9.999406983533636328e-01, -4.840233586415512712e-03, -9.755609433373464007e-03, -2.432485553238794215e-02],
-    [4.944332104809027843e-03, -9.999307975275865124e-01, -1.067491151635933944e-02, 2.115484641063037685e00],
-    [0.0, 0.0, 0.0, 1.0],
+    [6.12323400e-17, 4.99791693e-02, 9.98750260e-01, 1.89100000e00],
+    [-1.00000000e00, 3.06034148e-18, 6.11558155e-17, 0.00000000e00],
+    [0.00000000e00, -9.98750260e-01, 4.99791693e-02, 1.48500000e00],
+    [0.00000000e00, 0.00000000e00, 0.00000000e00, 1.00000000e00],
 ]
 
 STANDARD_INTRINSICS = [
-    [2049.873291015625, 0.0, 964.3667602539062],
-    [0.0, 2049.873291015625, 644.5161743164062],
-    [0.0, 0.0, 1.0],
+    [1.25281310e03, 0.00000000e00, 8.26588115e02],
+    [0.00000000e00, 1.25281310e03, 4.69984663e02],
+    [0.00000000e00, 0.00000000e00, 1.00000000e00],
 ]
 
 
@@ -50,15 +50,17 @@ def create_test_scenario() -> tuple[InitParams, FrameParams]:
     init_params = InitParams(cameras)
 
     # 创建测试车辆
+    # 43, 15
     vehicles = [
-        Vehicle([492.07811834, -147.71372052, -30.84144724], 1.728, "obj_034"),
-        Vehicle([494.07811834, -149.71372052, -30.84144724], 1.728, "obj_016"),
-        Vehicle([489.07811834, -145.71372052, -30.84144724], 1.728, "obj_010"),
+        Vehicle([[8232.21911375, 4679.84724959, 49.77610101]], -0.016, "obj_015"),
+        Vehicle([[8242.21911375, 4684.84724959, 49.77610101]], -0.016, "obj_015"),
+        # Vehicle([494.07811834, -149.71372052, -30.84144724], 1.728, "obj_016"),
+        # Vehicle([489.07811834, -145.71372052, -30.84144724], 1.728, "obj_010"),
     ]
 
     # 创建帧参数
     frame_params = FrameParams(
-        ego_trajectory=[498.28, -176.11, -31.95], ego_yaw=1.728, env_vehicles=vehicles, timestamp=20250912
+        ego_trajectory=[8292.141, 4682.328, 48.764], ego_yaw=-0.016, env_vehicles=vehicles, timestamp=20250912
     )
 
     return init_params, frame_params
