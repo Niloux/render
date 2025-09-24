@@ -56,8 +56,6 @@ def load_and_inspect_pth(pth_path):
         return None
 
 
-# 使用示例
 if __name__ == "__main__":
-    # 替换为你的pth文件路径
     pth_path = "049.pth"
     checkpoint = load_and_inspect_pth(pth_path)

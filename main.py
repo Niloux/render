@@ -13,7 +13,7 @@ from render_kernel import render
 os.environ["TORCH_CUDA_ARCH_LIST"] = "12.0"
 
 device = DEVICE
-model = GSModel.load_from_pth("model.pth").to_device(device)
+model = GSModel.load_from_pth("002.pth").to_device(device)
 background: GaussianComponent = model.get_component("background")
 sky: GaussianComponent = model.get_component("sky")
 actors: List[GaussianComponent] = model.get_components_by_type("obj")
@@ -67,7 +67,7 @@ img_width = 1920
 img_height = 1280
 
 # 输入主车的轨迹点和航向角
-ego_position = torch.tensor([498.28, -186.11, -31.95], device=device)
+ego_position = torch.tensor([492.28, -140.11, -31.95], device=device)
 ego_position = ego_position - MAP_CENTER
 ego_heading = 1.728
 
