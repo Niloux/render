@@ -15,7 +15,7 @@ os.environ["TORCH_CUDA_ARCH_LIST"] = "12.0"
 
 # 测试配置
 CONFIG = {
-    "model_path": "/home/saimo/work/render/model.pth",
+    "model_path": "/home/saimo/work/render/049.pth",
     "warmup_frames": 10,
     "benchmark_frames": 100,
     "save_first_frame": True,
