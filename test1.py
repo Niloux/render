@@ -13,8 +13,11 @@ from render_kernel import render
 os.environ["TORCH_CUDA_ARCH_LIST"] = "12.0"
 
 device = DEVICE
-model = GSModel.load_from_pth("049.pth").to_device(device)
+model = GSModel.load_from_pth(
+    "/home/saimo/yyf/streetcrafter/output/waymo/waymo_val_049/trained_model_0916_1/iteration_240000.pth"
+).to_device(device)
 background: GaussianComponent = model.get_component("background")
+sky: GaussianComponent = model.get_component("sky")
 
 MAP_CENTER = torch.tensor(MAP_CENTER, device=device)
 
@@ -22,11 +25,17 @@ MAP_CENTER = torch.tensor(MAP_CENTER, device=device)
 # 合并背景和天空的高斯点参数(静态)
 # 计算每一帧的actor高斯点(动态)
 # 合并静态点云和动态点云
-means = torch.cat([background.get_xyz()])
-quats = torch.cat([background.get_quats()])
-scales = torch.cat([background.get_scales()])
-opacities = torch.cat([background.get_opacities()])
-colors = torch.cat([background.get_colors()])
+means = torch.cat([background.get_xyz()])  # [N, 3]
+quats = torch.cat([background.get_quats()])  # [N, 4]
+scales = torch.cat([background.get_scales()])  # [N, 3]
+opacities = torch.cat([background.get_opacities()])  # [N, 1]
+colors = torch.cat([background.get_colors()])  # [N, 4, 3]
+
+# from ply import load_gaussian_parameters_from_ply, save_gaussian_parameters_to_ply
+
+# save_gaussian_parameters_to_ply(means, quats, scales, opacities, colors, "test.ply")
+
+# means, quats, scales, opacities, colors = load_gaussian_parameters_from_ply("049_0925.ply", "cuda")
 
 # 输入相机内外参和分辨率
 extrinsics = [
@@ -174,7 +183,23 @@ def benchmark_rendering(num_iterations=10, save_images=False):
 
     # 预热GPU
     print("GPU预热中...")
+    viewmats = torch.tensor(
+        [
+            [
+                [3.3247e-03, -9.9988e-01, -1.5147e-02, 9.2147e-01],
+                [4.7917e-02, 1.5289e-02, -9.9873e-01, -3.2239e00],
+                [9.9885e-01, 2.5947e-03, 4.7963e-02, -9.7571e01],
+                [0.0000e00, 0.0000e00, 0.0000e00, 1.0000e00],
+            ]
+        ],
+        device="cuda:0",
+    )
+    Ks = torch.tensor(
+        [[[1.2528e03, 0.0000e00, 8.2659e02], [0.0000e00, 1.2528e03, 4.6998e02], [0.0000e00, 0.0000e00, 1.0000e00]]],
+        device="cuda:0",
+    )
     render(means, quats, scales, opacities, colors, viewmats, Ks, img_width, img_height)
+    # return
     torch.cuda.synchronize() if torch.cuda.is_available() else None
 
     for i in range(num_iterations):
@@ -183,6 +208,21 @@ def benchmark_rendering(num_iterations=10, save_images=False):
         render_colors, render_alphas = render(
             means, quats, scales, opacities, colors, viewmats, Ks, img_width, img_height
         )
+        print(f"{render_colors.shape=}")
+        # 移除batch维度并转换到CPU
+        img_data = render_colors[0].detach().cpu().numpy()  # [896, 1600, 4]
+
+        rgb_colors = img_data[:, :, :3]  # 只取前3个通道 [H, W, 3]
+        rgb_colors = np.clip(rgb_colors, 0, 1)
+        rgb_colors = (rgb_colors * 255).astype(np.uint8)
+
+        # 创建PIL图像并保存 - 不指定模式，让PIL自动推断
+        output_path = "output.png"
+        img = Image.fromarray(rgb_colors)
+        img.save(output_path)
+        print(f"Saved RGB image to {output_path}")
+
+        quit()
 
         # 确保GPU计算完成
         if torch.cuda.is_available():
@@ -225,7 +265,7 @@ def main():
 
     # 性能基准测试
     print("\n=== 性能基准测试 ===")
-    avg_time_long, times_long = benchmark_rendering(num_iterations=100, save_images=True)
+    avg_time_long, times_long = benchmark_rendering(num_iterations=1, save_images=True)
 
 
 if __name__ == "__main__":

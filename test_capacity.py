@@ -6,7 +6,7 @@ import statistics
 import time
 from pathlib import Path
 
-from data_types import Camera
+from data_types import Camera, Vehicle
 from render_manager import FrameParams, InitParams, RenderManager
 from util import save_colors_as_png
 
@@ -19,7 +19,7 @@ CONFIG = {
     "warmup_frames": 10,
     "benchmark_frames": 100,
     "save_first_frame": True,
-    "camera_count": 1,
+    "camera_count": 6,
     "resolution": (1600, 896),
 }
 
@@ -52,8 +52,8 @@ def create_test_scenario() -> tuple[InitParams, FrameParams]:
     # 创建测试车辆
     # 43, 15
     vehicles = [
-        # Vehicle([[8232.21911375, 4679.84724959, 49.77610101]], -0.016, "obj_015"),
-        # Vehicle([[8242.21911375, 4684.84724959, 49.77610101]], -0.016, "obj_015"),
+        Vehicle([[8232.21911375, 4679.84724959, 49.77610101]], -0.016, "obj_015"),
+        Vehicle([[8242.21911375, 4684.84724959, 49.77610101]], -0.016, "obj_015"),
         # Vehicle([494.07811834, -149.71372052, -30.84144724], 1.728, "obj_016"),
         # Vehicle([489.07811834, -145.71372052, -30.84144724], 1.728, "obj_010"),
     ]

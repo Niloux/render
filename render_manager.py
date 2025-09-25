@@ -28,8 +28,7 @@ class RenderManager:
         这样每帧只需要更新动态部分，零内存分配
         """
         # 计算静态点云数据
-        static_components = [self.background]
-        # static_components = [self.background, self.sky]
+        static_components = [self.background, self.sky]
         self.static_data = GaussianData.from_components(static_components)
         self.static_points = self.static_data.means.shape[0]
 
