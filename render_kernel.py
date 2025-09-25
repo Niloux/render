@@ -1,5 +1,7 @@
 import math
 
+import numpy as np
+import open3d as o3d
 import torch
 from gsplat import (
     fully_fused_projection,
@@ -111,6 +113,21 @@ def render_gaussian_splatting(means, quats, scales, opacities, colors, viewmats,
 
 def render_native(means, quats, scales, opacities, colors, viewmats, Ks, img_width, img_height):
     """原生的渲染方法，使用rasterization函数的内置球谐函数处理"""
+    print(f"{colors.shape=}")
+    # 创建一个Open3D点云对象
+    pcd = o3d.geometry.PointCloud()
+    pcd.points = o3d.utility.Vector3dVector(means.detach().cpu().numpy())
+    # 如果你的colors是RGB颜色值
+    # pcd.colors = o3d.utility.Vector3dVector(colors.cpu().numpy())
+    # 如果colors是球谐系数，取0阶项并转换
+    dc_color = colors[:, 0, :].detach().cpu().numpy()
+    rgb_color = 1 / (1 + np.exp(-dc_color))  # Sigmoid转换
+    pcd.colors = o3d.utility.Vector3dVector(rgb_color)
+
+    # 保存点云
+    return
+    o3d.io.write_point_cloud("gaussians_o3d.ply", pcd)
+
     # gsplat库期望opacities形状为[N,]，而不是[N,1]
     if opacities.dim() == 2 and opacities.shape[1] == 1:
         opacities = opacities.squeeze(1)
