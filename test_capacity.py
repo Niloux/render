@@ -60,7 +60,7 @@ def create_test_scenario() -> tuple[InitParams, FrameParams]:
 
     # 创建帧参数
     frame_params = FrameParams(
-        ego_trajectory=[8352.159, 4684.092, 48.765], ego_yaw=-0.004, env_vehicles=vehicles, timestamp=20250912
+        ego_trajectory=[8352.159, 4684.092, 48.765], ego_yaw=0, env_vehicles=vehicles, timestamp=20250912
     )
 
     return init_params, frame_params
