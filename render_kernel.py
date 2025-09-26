@@ -10,7 +10,7 @@ from gsplat import (
     spherical_harmonics,
 )
 
-NATIVE = False
+NATIVE = True
 
 
 def extract_camera_centers(viewmats: torch.Tensor):

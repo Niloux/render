@@ -25,11 +25,11 @@ MAP_CENTER = torch.tensor(MAP_CENTER, device=device)
 # 合并背景和天空的高斯点参数(静态)
 # 计算每一帧的actor高斯点(动态)
 # 合并静态点云和动态点云
-means = torch.cat([background.get_xyz()])  # [N, 3]
-quats = torch.cat([background.get_quats()])  # [N, 4]
-scales = torch.cat([background.get_scales()])  # [N, 3]
-opacities = torch.cat([background.get_opacities()])  # [N, 1]
-colors = torch.cat([background.get_colors()])  # [N, 4, 3]
+means = torch.cat([background.get_xyz(), sky.get_xyz()])  # [N, 3]
+quats = torch.cat([background.get_quats(), sky.get_quats()])  # [N, 4]
+scales = torch.cat([background.get_scales(), sky.get_scales()])  # [N, 3]
+opacities = torch.cat([background.get_opacities(), sky.get_opacities()])  # [N, 1]
+colors = torch.cat([background.get_colors(), sky.get_colors()])  # [N, 4, 3]
 
 # from ply import load_gaussian_parameters_from_ply, save_gaussian_parameters_to_ply
 
