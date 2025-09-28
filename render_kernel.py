@@ -83,7 +83,7 @@ def render_gaussian_splatting(means, quats, scales, opacities, colors, viewmats,
     # 球谐函数处理
     camera_centers = extract_camera_centers(viewmats)  # [C, 3]
     dirs = means[None, :, :] - camera_centers[:, None, :]  # [C, N, 3]
-    masks = (radii > 0).any(dim=-1)
+    masks = (radii > 0).all(dim=-1)
     # masks = radii > 0  # [C, N]
     shs = colors.expand(viewmats.shape[0], -1, -1, -1)  # [C, N, K, 3]
     batch_colors = spherical_harmonics(1, dirs, shs, masks=masks)  # [C, N, 3]
@@ -105,6 +105,8 @@ def render_gaussian_splatting(means, quats, scales, opacities, colors, viewmats,
         packed=False,
         absgrad=True,
     )
+    print(f"{render_colors.shape=}")
+    print(render_colors[0][0][0])
 
     return render_colors, render_alphas
 
@@ -134,7 +136,7 @@ def render_native(means, quats, scales, opacities, colors, viewmats, Ks, img_wid
         packed=True,
         absgrad=True,
         tile_size=32,
-        radius_clip=5.0,
+        radius_clip=3.0,
         distributed=False,
         rasterize_mode="antialiased",  # 启用抗锯齿模式
     )
