@@ -101,23 +101,6 @@ class Vehicle:
 
     @classmethod
     def from_json(cls, data: Dict) -> "Vehicle":
-        """从JSON字典创建Vehicle对象
-
-        Args:
-            data: 包含车辆信息的字典，格式如：
-                {
-                    "trajectory": [x, y, z],
-                    "yaw": 1.57,
-                    "type": "car"  # 可选
-                }
-
-        Returns:
-            Vehicle对象
-
-        Raises:
-            ValueError: 当数据格式不正确时
-        """
-        # 验证必需字段
         if "trajectory" not in data:
             raise ValueError("Missing required field: trajectory")
         if "yaw" not in data:
@@ -127,7 +110,18 @@ class Vehicle:
         if not isinstance(trajectory, list) or len(trajectory) != 3:
             raise ValueError("trajectory must be a list of 3 floats [x, y, z]")
 
-        return cls(trajectory=[float(x) for x in trajectory], yaw=float(data["yaw"]), type=data.get("type", ""))
+        return cls(
+            trajectory=[float(x) for x in trajectory],
+            yaw=float(data["yaw"]),
+            type=data.get("type", "")
+        )
+
+    def to_json(self) -> Dict:
+        return {
+            "trajectory": self.trajectory,
+            "yaw": self.yaw,
+            "type": self.type if self.type is not None else ""
+        }
 
 
 @dataclass
@@ -139,48 +133,54 @@ class FrameParams:
 
     @classmethod
     def from_json(cls, data: Dict) -> "FrameParams":
-        """从JSON字典创建FrameParams对象
+        # 校验必需字段
+        for key in ("ego_trajectory", "ego_yaw", "env_vehicles", "timestamp"):
+            if key not in data:
+                raise ValueError(f"Missing required field: {key}")
 
-        Args:
-            data: 包含帧参数的字典，格式如：
-                {
-                    "ego_trajectory": [x, y, z],
-                    "ego_yaw": 1.57,
-                    "env_vehicles": [
-                        {"trajectory": [x, y, z], "yaw": 0.0, "type": "car"},
-                        ...
-                    ],
-                    "timestamp": 1234567890
-                }
-
-        Returns:
-            FrameParams对象
-
-        Raises:
-            ValueError: 当数据格式不正确时
-        """
-        # 验证必需字段
-        required_fields = ["ego_trajectory", "ego_yaw", "env_vehicles", "timestamp"]
-        missing_fields = [field for field in required_fields if field not in data]
-        if missing_fields:
-            raise ValueError(f"Missing required fields: {missing_fields}")
-
-        ego_trajectory = data["ego_trajectory"]
-        if not isinstance(ego_trajectory, list) or len(ego_trajectory) != 3:
+        # ego_trajectory
+        ego_traj = data["ego_trajectory"]
+        if not isinstance(ego_traj, list) or len(ego_traj) != 3:
             raise ValueError("ego_trajectory must be a list of 3 floats [x, y, z]")
+        ego_traj = [float(x) for x in ego_traj]
 
-        env_vehicles_data = data["env_vehicles"]
-        if not isinstance(env_vehicles_data, list):
+        # ego_yaw
+        ego_yaw = float(data["ego_yaw"])
+
+        # env_vehicles: 允许是 dict 列表或 Vehicle 实例列表
+        ev_raw = data["env_vehicles"]
+        if not isinstance(ev_raw, list):
             raise ValueError("env_vehicles must be a list")
 
-        env_vehicles = [Vehicle.from_json(vehicle_data) for vehicle_data in env_vehicles_data]
+        env_vehicles: List[Vehicle] = []
+        for i, item in enumerate(ev_raw):
+            if isinstance(item, Vehicle):
+                env_vehicles.append(item)
+            elif isinstance(item, dict):
+                env_vehicles.append(Vehicle.from_json(item))
+            else:
+                raise ValueError(f"env_vehicles[{i}] must be a dict or Vehicle")
+
+        # timestamp
+        ts = data["timestamp"]
+        if not isinstance(ts, int):
+            raise ValueError("timestamp must be an int")
 
         return cls(
-            ego_trajectory=[float(x) for x in ego_trajectory],
-            ego_yaw=float(data["ego_yaw"]),
+            ego_trajectory=ego_traj,
+            ego_yaw=ego_yaw,
             env_vehicles=env_vehicles,
-            timestamp=int(data["timestamp"]),
+            timestamp=ts,
         )
+
+    def to_json(self) -> Dict:
+        """将FrameParams对象转换为JSON字典"""
+        return {
+            "ego_trajectory": self.ego_trajectory,
+            "ego_yaw": self.ego_yaw,
+            "env_vehicles": [v.to_json() for v in self.env_vehicles],
+            "timestamp": self.timestamp,
+        }
 
 
 @dataclass
