@@ -6,6 +6,8 @@ import statistics
 import time
 from pathlib import Path
 
+import torch
+
 from data_types import Camera, Vehicle
 from render_manager import FrameParams, InitParams, RenderManager
 from util import save_colors_as_png
@@ -15,9 +17,9 @@ os.environ["TORCH_CUDA_ARCH_LIST"] = "12.0"
 
 # 测试配置
 CONFIG = {
-    "model_path": "/home/saimo/work/render/049.pth",
+    "model_path": "/home/saimo/work/render/049_new.pth",
     "warmup_frames": 10,
-    "benchmark_frames": 100,
+    "benchmark_frames": 1000,
     "save_first_frame": True,
     "camera_count": 6,
     "resolution": (1600, 896),
@@ -126,6 +128,7 @@ def print_benchmark_results(stats: dict) -> None:
     print("=" * 50)
 
 
+@torch.no_grad()
 def main() -> None:
     """主测试函数，包含错误处理和资源管理"""
     try:

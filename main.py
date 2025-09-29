@@ -20,6 +20,7 @@ actors: List[GaussianComponent] = model.get_components_by_type("obj")
 names = [actor.name for actor in actors]
 print(f"{names=}")  # 010,016,034是效果还ok的, 下标对应2, 5, 9
 actor: GaussianComponent = actors[5]
+quit()
 
 MAP_CENTER = torch.tensor(MAP_CENTER, device=device)
 

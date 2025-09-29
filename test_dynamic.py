@@ -19,7 +19,7 @@ os.environ["TORCH_CUDA_ARCH_LIST"] = "12.0"
 
 # 简化配置
 CONFIG = {
-    "model_path": "/home/saimo/work/render/049.pth",
+    "model_path": "/home/saimo/work/render/049_new.pth",
     "trajectory_json": "trajectory_data.json",
     "output_video": "trajectory_video.mp4",
     "resolution": (1600, 896),

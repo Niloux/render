@@ -139,6 +139,9 @@ def render_native(means, quats, scales, opacities, colors, viewmats, Ks, img_wid
         radius_clip=3.0,
         distributed=False,
         rasterize_mode="antialiased",  # 启用抗锯齿模式
+        # 3DGUT
+        # with_ut=True,
+        # with_eval3d=True,
     )
     return render_colors, render_alphas
 
