@@ -5,6 +5,7 @@ import os
 import statistics
 import time
 from pathlib import Path
+import torch
 
 from .data_types import Camera
 from .render_manager import FrameParams, InitParams, RenderManager, Vehicle
@@ -15,11 +16,11 @@ os.environ["TORCH_CUDA_ARCH_LIST"] = "12.0"
 
 # 测试配置
 CONFIG = {
-    "model_path": "/home/app/wangxiaolei/3dgs/3DGS/src/3dgs_node/render/model.pth",
+    "model_path": "/home/app/3DGS/src/3dgs_node/render/model.pth",
     "warmup_frames": 10,
-    "benchmark_frames": 100,
+    "benchmark_frames": 1000000,
     "save_first_frame": True,
-    "camera_count": 1,
+    "camera_count": 6,
     "resolution": (1920, 1280),
 }
 
@@ -51,9 +52,9 @@ def create_test_scenario() -> tuple[InitParams, FrameParams]:
 
     # 创建测试车辆
     vehicles = [
-        Vehicle([492.07811834, -147.71372052, -30.84144724], 1.728, "obj_034"),
-        Vehicle([494.07811834, -149.71372052, -30.84144724], 1.728, "obj_016"),
-        Vehicle([489.07811834, -145.71372052, -30.84144724], 1.728, "obj_010"),
+        Vehicle([492.07811834, -147.71372052, -30.84144724], 1.728, "obj_055"),
+        Vehicle([494.07811834, -149.71372052, -30.84144724], 1.728, "obj_055"),
+        Vehicle([489.07811834, -145.71372052, -30.84144724], 1.728, "obj_055"),
     ]
 
     # 创建帧参数
@@ -82,7 +83,8 @@ def run_benchmark(render_manager: RenderManager, frame_params: FrameParams) -> d
 
     for i in range(CONFIG["benchmark_frames"]):
         t0 = time.perf_counter()  # 使用高精度计时器
-        frame_resp = render_manager.render_frame(frame_params)
+        with torch.no_grad():
+            frame_resp = render_manager.render_frame(frame_params)
 
         t1 = time.perf_counter()
 
