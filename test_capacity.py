@@ -17,11 +17,11 @@ os.environ["TORCH_CUDA_ARCH_LIST"] = "12.0"
 
 # 测试配置
 CONFIG = {
-    "model_path": "/home/saimo/work/render/049_new.pth",
+    "model_path": "/home/saimo/work/render/049_1009_combined.pth",
     "warmup_frames": 10,
-    "benchmark_frames": 1000,
+    "benchmark_frames": 100,
     "save_first_frame": True,
-    "camera_count": 6,
+    "camera_count": 5,
     "resolution": (1600, 896),
 }
 
@@ -54,15 +54,16 @@ def create_test_scenario() -> tuple[InitParams, FrameParams]:
     # 创建测试车辆
     # 43, 15
     vehicles = [
-        Vehicle([[8232.21911375, 4679.84724959, 49.77610101]], -0.016, "obj_015"),
-        Vehicle([[8242.21911375, 4684.84724959, 49.77610101]], -0.016, "obj_015"),
+        Vehicle([[8232.21911375, 4679.84724959, 49.77610101]], 0, "obj_016"),
+        Vehicle([[8242.21911375, 4684.84724959, 49.77610101]], 0, "obj_015"),
+        Vehicle([[8248.21911375, 4681.84724959, 49.77610101]], 0, "obj_034"),
         # Vehicle([494.07811834, -149.71372052, -30.84144724], 1.728, "obj_016"),
         # Vehicle([489.07811834, -145.71372052, -30.84144724], 1.728, "obj_010"),
     ]
 
     # 创建帧参数
     frame_params = FrameParams(
-        ego_trajectory=[8352.159, 4684.092, 48.765], ego_yaw=0, env_vehicles=vehicles, timestamp=20250912
+        ego_trajectory=[8212.159, 4684.092, 48.765], ego_yaw=0, env_vehicles=vehicles, timestamp=20250912
     )
 
     return init_params, frame_params

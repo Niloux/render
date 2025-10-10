@@ -57,5 +57,5 @@ def load_and_inspect_pth(pth_path):
 
 
 if __name__ == "__main__":
-    pth_path = "049.pth"
+    pth_path = "049_1009.pth"
     checkpoint = load_and_inspect_pth(pth_path)

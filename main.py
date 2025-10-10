@@ -13,7 +13,7 @@ from render_kernel import render
 os.environ["TORCH_CUDA_ARCH_LIST"] = "12.0"
 
 device = DEVICE
-model = GSModel.load_from_pth("121.pth").to_device(device)
+model = GSModel.load_from_pth("049_0930.pth").to_device(device)
 background: GaussianComponent = model.get_component("background")
 sky: GaussianComponent = model.get_component("sky")
 actors: List[GaussianComponent] = model.get_components_by_type("obj")

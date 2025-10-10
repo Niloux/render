@@ -77,9 +77,9 @@ def save_colors_as_png(image: Dict[str, torch.Tensor], output_dir="output"):
         print(f"拷贝耗时: {t1 - t0:.6f}")
         # rgb_colors = colors_tensor.detach().cpu().numpy()
 
-        # 数值范围处理：假设输出在[0,1]范围内，转换到[0,255]
-        rgb_colors = np.clip(rgb_colors, 0, 1)
-        rgb_colors = (rgb_colors * 255).astype(np.uint8)
+        # # 数值范围处理：假设输出在[0,1]范围内，转换到[0,255]
+        # rgb_colors = np.clip(rgb_colors, 0, 1)
+        # rgb_colors = (rgb_colors * 255).astype(np.uint8)
 
         # 创建PIL图像并保存
         img = Image.fromarray(rgb_colors)

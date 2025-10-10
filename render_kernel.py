@@ -105,8 +105,9 @@ def render_gaussian_splatting(means, quats, scales, opacities, colors, viewmats,
         packed=False,
         absgrad=True,
     )
-    print(f"{render_colors.shape=}")
-    print(render_colors[0][0][0])
+    # print(f"{render_colors.shape=}")
+    # print(render_colors[0][0][0])
+    # quit()
 
     return render_colors, render_alphas
 
@@ -134,15 +135,20 @@ def render_native(means, quats, scales, opacities, colors, viewmats, Ks, img_wid
         far_plane=1000,
         sh_degree=1,
         packed=True,
-        absgrad=True,
         tile_size=32,
         radius_clip=3.0,
-        distributed=False,
         rasterize_mode="antialiased",  # 启用抗锯齿模式
         # 3DGUT
         # with_ut=True,
         # with_eval3d=True,
+        # 多GPU并行
+        distributed=False,
+        absgrad=True,
     )
+    # print(f"{render_colors.shape=}")
+    # print(render_colors[0][0][0])
+
+    # quit()
     return render_colors, render_alphas
 
 

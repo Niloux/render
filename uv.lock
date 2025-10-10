@@ -521,6 +521,18 @@ wheels = [
 ]
 
 [[package]]
+name = "plyfile"
+version = "1.1.2"
+source = { registry = "https://mirrors.huaweicloud.com/repository/pypi/simple" }
+dependencies = [
+    { name = "numpy" },
+]
+sdist = { url = "https://mirrors.huaweicloud.com/repository/pypi/packages/3e/2e/212e061f2dfa6c6510d4d144819a3e23039c6d4c30731bd023c32da15d8c/plyfile-1.1.2.tar.gz", hash = "sha256:bfb2d88cb3e369cae56df8cf4d107fbfd7beef49ed6cf8ef6b2931b321af9def" }
+wheels = [
+    { url = "https://mirrors.huaweicloud.com/repository/pypi/packages/55/48/600cc57763e82a7d305f816d79fe8267c43e74487e144744349c2aa9f6fd/plyfile-1.1.2-py3-none-any.whl", hash = "sha256:f5529face448b14e1927382bb05231827268650f3411b467b17bd6438eb0b83d" },
+]
+
+[[package]]
 name = "pygments"
 version = "2.19.2"
 source = { registry = "https://mirrors.huaweicloud.com/repository/pypi/simple" }
@@ -537,6 +549,7 @@ dependencies = [
     { name = "gsplat" },
     { name = "opencv-python" },
     { name = "packaging" },
+    { name = "plyfile" },
     { name = "torch" },
     { name = "torchvision" },
 ]
@@ -546,6 +559,7 @@ requires-dist = [
     { name = "gsplat", specifier = ">=1.5.3" },
     { name = "opencv-python", specifier = ">=4.12.0.88" },
     { name = "packaging", specifier = ">=25.0" },
+    { name = "plyfile", specifier = ">=1.1.2" },
     { name = "torch", specifier = ">=2.8.0" },
     { name = "torchvision", specifier = ">=0.23.0" },
 ]

@@ -167,10 +167,11 @@ class RenderManager:
             viewmats = calculate_viewmats(extrinsics_list, ego_heading, ego_position)
 
             # 渲染并收集结果 - 直接传递预分配buffer参数
-            render_colors, render_alphas = render(
+            batch_colors, batch_alphas = render(
                 render_means, render_quats, render_scales, render_opacities, render_colors, viewmats, Ks, width, height
             )
-            for cam_id, image in zip(camera_ids, render_colors):
+            batch_colors = (batch_colors.clamp(0, 1) * 255).to(torch.uint8)
+            for cam_id, image in zip(camera_ids, batch_colors):
                 images[cam_id] = image
 
         return FrameResp(params.timestamp, images)
