@@ -5,12 +5,13 @@ import os
 import statistics
 import time
 from pathlib import Path
+
 import torch
 
 from .data_types import Camera
 from .render_manager import FrameParams, InitParams, RenderManager, Vehicle
 from .util import save_colors_as_png
-import pprint
+
 # 环境配置
 os.environ["TORCH_CUDA_ARCH_LIST"] = "12.0"
 
@@ -18,30 +19,30 @@ os.environ["TORCH_CUDA_ARCH_LIST"] = "12.0"
 CONFIG = {
     "model_path": "/home/app/3DGS/src/3dgs_node/render/049_1009_combined.pth",
     "warmup_frames": 10,
-    "benchmark_frames": 20,
+    "benchmark_frames": 100,
     "save_first_frame": True,
-    "camera_count": 5,
-    "resolution": (1920, 1280),
+    "camera_count": 10,
+    "resolution": (1600, 1066),
 }
 
 # 标准相机参数
 STANDARD_EXTRINSICS = [
-    [-9.703265255827278613e-03, -1.072251344945212778e-02, 9.998954317070867237e-01, 1.538897001763444461e00],
-    [-9.999406983533636328e-01, -4.840233586415512712e-03, -9.755609433373464007e-03, -2.432485553238794215e-02],
-    [4.944332104809027843e-03, -9.999307975275865124e-01, -1.067491151635933944e-02, 2.115484641063037685e00],
-    [0.0, 0.0, 0.0, 1.0],
+    [6.12323400e-17, 6.12323400e-17, 1.00000000e00, 1.89100000e00],
+    [-1.00000000e00, 3.74939946e-33, 6.12323400e-17, 0.00000000e00],
+    [0.00000000e00, -1.00000000e00, 6.12323400e-17, 2.10000000e00],
+    [0.00000000e00, 0.00000000e00, 0.00000000e00, 1.00000000e00],
 ]
 
 STANDARD_INTRINSICS = [
-    [2049.873291015625, 0.0, 964.3667602539062],
-    [0.0, 2049.873291015625, 644.5161743164062],
-    [0.0, 0.0, 1.0],
+    [1.73590934e03, 0.00000000e00, 7.97744857e02],
+    [0.00000000e00, 1.73590934e03, 5.42141494e02],
+    [0.00000000e00, 0.00000000e00, 1.00000000e00],
 ]
 
 
 def create_test_cameras(count: int, width: int, height: int) -> list[Camera]:
     """创建测试相机列表"""
-    return [Camera(f"camera{i + 1}", STANDARD_EXTRINSICS, STANDARD_INTRINSICS, width, height) for i in range(count)]
+    return [Camera(f"camera{i + 1}", STANDARD_EXTRINSICS, STANDARD_INTRINSICS, width, height+10*i) for i in range(count)]
 
 
 def create_test_scenario() -> tuple[InitParams, FrameParams]:
@@ -51,15 +52,18 @@ def create_test_scenario() -> tuple[InitParams, FrameParams]:
     init_params = InitParams(cameras)
 
     # 创建测试车辆
+    # 43, 15
     vehicles = [
-        Vehicle([492.07811834, -147.71372052, -30.84144724], 1.728, "obj_015"),
-        Vehicle([494.07811834, -149.71372052, -30.84144724], 1.728, "obj_015"),
-        Vehicle([489.07811834, -145.71372052, -30.84144724], 1.728, "obj_015"),
+        Vehicle([8227.21911375, 4679.84724959, 49.77610101], 0, "obj_016"),
+        Vehicle([8237.21911375, 4684.84724959, 49.77610101], 0, "obj_015"),
+        Vehicle([8243.21911375, 4681.84724959, 49.77610101], 0, "obj_034"),
+        # Vehicle([494.07811834, -149.71372052, -30.84144724], 1.728, "obj_016"),
+        # Vehicle([489.07811834, -145.71372052, -30.84144724], 1.728, "obj_010"),
     ]
 
     # 创建帧参数
     frame_params = FrameParams(
-        ego_trajectory=[498.28, -176.11, -31.95], ego_yaw=1.728, env_vehicles=vehicles, timestamp=20250912
+        ego_trajectory=[8212.159, 4684.092, 48.765], ego_yaw=0, env_vehicles=vehicles, timestamp=20250912
     )
 
     return init_params, frame_params
@@ -83,9 +87,8 @@ def run_benchmark(render_manager: RenderManager, frame_params: FrameParams) -> d
 
     for i in range(CONFIG["benchmark_frames"]):
         t0 = time.perf_counter()  # 使用高精度计时器
-        with torch.no_grad():
-            frame_resp = render_manager.render_frame(frame_params)
-
+        frame_resp = render_manager.render_frame(frame_params)
+        torch.cuda.synchronize()  # 确保所有CUDA操作完成
         t1 = time.perf_counter()
 
         render_time = t1 - t0
@@ -127,6 +130,7 @@ def print_benchmark_results(stats: dict) -> None:
     print("=" * 50)
 
 
+@torch.no_grad()
 def main() -> None:
     """主测试函数，包含错误处理和资源管理"""
     try:
@@ -140,10 +144,6 @@ def main() -> None:
 
         # 创建测试场景
         init_params, frame_params = create_test_scenario()
-
-
-        pprint.pprint(init_params)
-        pprint.pprint(frame_params)
 
         # 初始化渲染器
         init_resp = render_manager.init(init_params)
@@ -165,4 +165,5 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    with torch.no_grad():
+        main()
