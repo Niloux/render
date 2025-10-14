@@ -12,3 +12,4 @@ wheels/
 *.pth
 output/
 *.ply
+*.json
