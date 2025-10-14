@@ -113,22 +113,21 @@ class GaussianComponent:
             变换后的坐标张量 [N, 3]
         """
         with torch.no_grad():
-            with torch.no_grad():
             if self.name == "background":
-                    return self.xyz
-                elif self.name == "sky":
-                    dists = torch.linalg.norm(self.xyz - SKY_CENTER, dim=1)
-                    ratios = dists / (2 * SKY_RADIUS)
-                    # 将条件张量扩展到匹配xyz的形状 (N, 3)
-                    condition = (ratios < 1.0).unsqueeze(1)  # (N, 1) -> 广播到 (N, 3)
-                    xyz = torch.where(condition, SKY_CENTER + (self.xyz - SKY_CENTER) / ratios.unsqueeze(1), self.xyz)
-                    return xyz
-                else:
-                    # 计算旋转矩阵，无需缓存
-                    device = self.xyz.device
-                    cos_h = torch.cos(torch.tensor(heading, device=device))
-                    sin_h = torch.sin(torch.tensor(heading, device=device))
-                    rot_matrix = torch.tensor([[cos_h, -sin_h, 0.0], [sin_h, cos_h, 0.0], [0.0, 0.0, 1.0]], device=device)
+                return self.xyz
+            elif self.name == "sky":
+                dists = torch.linalg.norm(self.xyz - SKY_CENTER, dim=1)
+                ratios = dists / (2 * SKY_RADIUS)
+                # 将条件张量扩展到匹配xyz的形状 (N, 3)
+                condition = (ratios < 1.0).unsqueeze(1)  # (N, 1) -> 广播到 (N, 3)
+                xyz = torch.where(condition, SKY_CENTER + (self.xyz - SKY_CENTER) / ratios.unsqueeze(1), self.xyz)
+                return xyz
+            else:
+                # 计算旋转矩阵，无需缓存
+                device = self.xyz.device
+                cos_h = torch.cos(torch.tensor(heading, device=device))
+                sin_h = torch.sin(torch.tensor(heading, device=device))
+                rot_matrix = torch.tensor([[cos_h, -sin_h, 0.0], [sin_h, cos_h, 0.0], [0.0, 0.0, 1.0]], device=device)
 
                 # 向量化矩阵乘法：[N, 3] @ [3, 3] -> [N, 3]
                 means_rotated = torch.matmul(self.xyz, rot_matrix.T)

@@ -155,13 +155,12 @@ class RenderManager:
             ego_heading = params.ego_yaw
             # ego_position = torch.tensor(params.ego_trajectory, device=self.device, dtype=torch.float32) - self.map_center
 
-            x, y, z = params.ego_trajectory  # List[float] 已保证
+            x, y, z = params.ego_trajectory  
             ep = self._ego_position
             ep[0] = x - self._cx
             ep[1] = y - self._cy
             ep[2] = z - self._cz
-            ego_position = ep  # 后续直接用这个张量
-
+            ego_position = ep  
             # 预分配buffer的动态部分
             dynamic_points = self._update_dynamic_buffer(params.env_vehicles)
             total_points = self.static_points + dynamic_points
@@ -176,7 +175,7 @@ class RenderManager:
             images = {}
             events = []
             out_by_res = {}  # 暂存各分辨率的(IDs, 结果tensor)，避免在流内改写最终dict
-            # torch.cuda.synchronize(self.device)
+
 
             # 使用预计算的相机数据，零查找开销
             for resolution, cam_data in self.camera_data.items():
@@ -217,67 +216,5 @@ class RenderManager:
 
             return FrameResp(params.timestamp, images)
         
-
-
-    def render_frame11(self, params: FrameParams) -> FrameResp:
-        print(f"Rendering frame at timestamp {params.timestamp} with {len(params.env_vehicles)} vehicles.")
-        start1 = time.perf_counter()
-        with torch.no_grad():
-            """渲染接口，每帧调用"""
-            # 输入验证
-            if not params.ego_trajectory or len(params.ego_trajectory) != 3:
-                raise ValueError(f"Invalid ego_trajectory: {params.ego_trajectory}")
-
-            # 转换ego
-            ego_heading = params.ego_yaw
-
-
-            x, y, z = params.ego_trajectory  # List[float] 已保证
-            ep = self._ego_position
-            ep[0] = x - self._cx
-            ep[1] = y - self._cy
-            ep[2] = z - self._cz
-            ego_position = ep  # 后续直接用这个张量
-            # 预分配buffer的动态部分
-
-            dynamic_points = self._update_dynamic_buffer(params.env_vehicles)
-
-            total_points = self.static_points + dynamic_points
-
-            # 直接使用预分配buffer，避免创建临时对象和tuple解包
-            render_means = self.render_buffer["means"][:total_points]
-            render_quats = self.render_buffer["quats"][:total_points]
-            render_scales = self.render_buffer["scales"][:total_points]
-            render_opacities = self.render_buffer["opacities"][:total_points]
-            render_colors = self.render_buffer["colors"][:total_points]
-
-            images = {}
-            # 使用预计算的相机数据，零查找开销
-
-            for resolution, cam_data in self.camera_data.items():
-                # 直接使用预计算的数据，无需运行时转换
-                    
-                camera_ids = cam_data["camera_ids"]
-                extrinsics_inv = cam_data["extrinsics_inv"]
-                Ks = cam_data["intrinsics_tensor"]
-                width = cam_data["width"]
-                height = cam_data["height"]
-
-                viewmats = calculate_viewmats(extrinsics_inv, ego_heading, ego_position)
-
-                # 渲染并收集结果 - 直接传递预分配buffer参数
-  
-                batch_colors, batch_alphas = render(
-                    render_means, render_quats, render_scales, render_opacities, render_colors, viewmats, Ks, width, height
-                )
-                torch.cuda.synchronize()  # 确保所有CUDA操作完成
-                end = time.perf_counter()
-
-                batch_colors = (batch_colors.clamp(0, 1) * 255).to(torch.uint8)
-                for cam_id, image in zip(camera_ids, batch_colors):
-                    images[cam_id] = image
-
-
-            return FrameResp(params.timestamp, images)
 
 
