@@ -2,7 +2,7 @@ from typing import Dict, List, Tuple
 
 import torch
 
-from config import DEVICE, MAP_CENTER
+from config import MAP_CENTER
 from data_types import Camera, FrameParams, FrameResp, GaussianData, InitParams, InitResp, Vehicle
 from models import GaussianComponent, GSModel
 from render_kernel import render
@@ -11,8 +11,14 @@ from util import calculate_viewmats
 
 class RenderManager:
     def __init__(self, model: str = "model.path") -> None:
-        self.device = DEVICE
-        self.model = GSModel.load_from_pth(model).to_device(DEVICE)
+        # 获取当前进程的rank并分配对应的GPU设备
+        if torch.distributed.is_initialized():
+            rank = torch.distributed.get_rank()
+            self.device = torch.device(f"cuda:{rank}")
+        else:
+            # 如果不是分布式环境，则使用可用的第一个GPU或CPU
+            self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+        self.model = GSModel.load_from_pth(model).to_device(self.device)
         self.background: GaussianComponent = self.model.get_component("background")
         self.sky: GaussianComponent = self.model.get_component("sky")
         self.actors: List[GaussianComponent] = self.model.get_components_by_type("obj")

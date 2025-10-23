@@ -105,9 +105,6 @@ def render_gaussian_splatting(means, quats, scales, opacities, colors, viewmats,
         packed=False,
         absgrad=True,
     )
-    # print(f"{render_colors.shape=}")
-    # print(render_colors[0][0][0])
-    # quit()
 
     return render_colors, render_alphas
 
@@ -122,9 +119,6 @@ def render_native(means, quats, scales, opacities, colors, viewmats, Ks, img_wid
     # colors保持[N, 4, 3]形状，设置sh_degree=1让rasterization内部处理球谐函数
     # 关键修复：添加rasterize_mode="antialiased"启用抗锯齿补偿，消除渲染裂痕
     # print(f"{viewmats.shape=}")
-
-    # k1, k2, k3, k4, k5, k6
-    radial_coeffs = torch.tensor([[-1.9, 2.9, 0.0, 0.0, 0.0, 0.0]], dtype=torch.float32, device=means.device)
 
     render_colors, render_alphas, _ = rasterization(
         means=means,
@@ -143,19 +137,10 @@ def render_native(means, quats, scales, opacities, colors, viewmats, Ks, img_wid
         tile_size=16,
         radius_clip=3.0,
         rasterize_mode="antialiased",  # 启用抗锯齿模式
-        # 3DGUT
-        # with_ut=True,
-        # with_eval3d=True,
-        # camera_model="fisheye",
-        # radial_coeffs=radial_coeffs,  # 使用鱼眼相机的径向畸变系数
         # 多GPU并行
         distributed=False,
         absgrad=False,
     )
-    # print(f"{render_colors.shape=}")
-    # print(render_colors[0][0][0])
-
-    # quit()
     return render_colors, render_alphas
 
 

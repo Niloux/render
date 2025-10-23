@@ -1,5 +1,3 @@
-import torch
-
 # 049_1009
 SKY_CENTER = [2.0127, 0.5757, 3.4362]
 SKY_RADIUS = 210.4563
@@ -17,5 +15,3 @@ MAP_CENTER = [8254.21911375, 4682.84724959, 48.77610101]
 # SKY_RADIUS = 111.5528
 
 # MAP_CENTER = [492.07811834, -147.71372052, -32.64144724]
-
-DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")

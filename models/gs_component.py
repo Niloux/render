@@ -5,10 +5,17 @@ from typing import Optional
 
 import torch
 
-from config import DEVICE, SKY_CENTER, SKY_RADIUS
+from config import SKY_CENTER, SKY_RADIUS
 
-SKY_CENTER = torch.tensor(SKY_CENTER, device=DEVICE)
-SKY_RADIUS = torch.tensor(SKY_RADIUS, device=DEVICE)
+if torch.distributed.is_initialized():
+    rank = torch.distributed.get_rank()
+    device = torch.device(f"cuda:{rank}")
+else:
+    # 如果不是分布式环境，则使用可用的第一个GPU或CPU
+    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+
+SKY_CENTER = torch.tensor(SKY_CENTER, device=device)
+SKY_RADIUS = torch.tensor(SKY_RADIUS, device=device)
 
 
 @dataclass
