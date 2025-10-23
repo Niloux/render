@@ -19,8 +19,8 @@ actor2: GaussianComponent = actors[5]
 actor3: GaussianComponent = actors[9]
 
 
-model2 = GSModel.load_from_pth("049_1009.pth").to_device(device)
+model2 = GSModel.load_from_pth("049_1020.pth").to_device(device)
 model2.add_component(actor1)
 model2.add_component(actor2)
 model2.add_component(actor3)
-model2.save_to_pth("049_1009_conbined.pth")
+model2.save_to_pth("049_1020_combined.pth")
