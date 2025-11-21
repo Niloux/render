@@ -10,7 +10,7 @@ def load_and_inspect_pth(pth_path):
     """
     try:
         # 加载pth文件
-        checkpoint = torch.load(pth_path, map_location="cpu")
+        checkpoint = torch.load(pth_path, map_location="cpu", weights_only=False)
 
         print(f"=== PTH文件结构分析: {pth_path} ===")
         print(f"数据类型: {type(checkpoint)}")
@@ -57,5 +57,7 @@ def load_and_inspect_pth(pth_path):
 
 
 if __name__ == "__main__":
-    pth_path = "049_1009.pth"
+    pth_path = "/home/saimo/work/3dgrut/runs/flowers_3dgrt/flowers-2910_092434/ckpt_last.pt"
+    # pth_path = "/home/saimo/work/render/049_1020.pth"
+
     checkpoint = load_and_inspect_pth(pth_path)

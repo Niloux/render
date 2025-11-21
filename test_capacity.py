@@ -168,31 +168,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    if not torch.distributed.is_initialized():
-        local_rank = int(os.environ.get("LOCAL_RANK", 0))
-
-        # 检查可用的GPU数量
-        gpu_count = torch.cuda.device_count()
-        if gpu_count == 0:
-            device_id = -1  # CPU
-            print("警告：没有可用的GPU，将使用CPU")
-        else:
-            # 如果GPU数量少于进程数，多个进程将共享同一个GPU
-            device_id = local_rank % gpu_count
-            torch.cuda.set_device(device_id)
-            if device_id != local_rank:
-                print(f"警告：GPU数量({gpu_count})少于进程数，进程{local_rank}将使用设备{device_id}")
-
-        torch.distributed.init_process_group(backend="nccl")
-
-        rank = torch.distributed.get_rank()
-        device = torch.cuda.current_device()
-        print(f"[Rank {rank}]初始化完成, LOCAL_RANK={local_rank}, CUDA_DEVICE={device}")
-
-        try:
-            main()
-        except Exception as e:
-            print(f"[Rank {rank}]错误: {e}")
-            raise
-        finally:
-            torch.distributed.destroy_process_group()
+    main()
