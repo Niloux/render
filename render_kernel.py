@@ -1,7 +1,8 @@
 import math
 
 import torch
-from gsplat import (
+
+from splatad.gsplat import (
     fully_fused_projection,
     isect_offset_encode,
     isect_tiles,
@@ -140,6 +141,7 @@ def render_native(means, quats, scales, opacities, colors, viewmats, Ks, img_wid
         # # 多GPU并行
         # distributed=True,
         # absgrad=False,
+        velocities=None,
     )
     return render_colors, render_alphas
 
