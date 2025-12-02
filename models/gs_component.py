@@ -5,7 +5,7 @@ from typing import Optional
 
 import torch
 
-from ..config import DEVICE, SKY_CENTER, SKY_RADIUS
+from config import DEVICE, SKY_CENTER, SKY_RADIUS
 
 SKY_CENTER = torch.tensor(SKY_CENTER, device=DEVICE)
 SKY_RADIUS = torch.tensor(SKY_RADIUS, device=DEVICE)

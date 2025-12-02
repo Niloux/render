@@ -8,16 +8,16 @@ from pathlib import Path
 
 import torch
 
-from .data_types import Camera
-from .render_manager import FrameParams, InitParams, RenderManager, Vehicle
-from .util import save_colors_as_png
+from data_types import Camera
+from render_manager import FrameParams, InitParams, RenderManager, Vehicle
+from util import save_colors_as_png
 
 # 环境配置
 os.environ["TORCH_CUDA_ARCH_LIST"] = "12.0"
 
 # 测试配置
 CONFIG = {
-    "model_path": "/home/app/3DGS/src/3dgs_node/render/049_1009_combined.pth",
+    "model_path": "/home/app/3DGS/model/iteration_240000_1112.pth",
     "warmup_frames": 10,
     "benchmark_frames": 100,
     "save_first_frame": True,
