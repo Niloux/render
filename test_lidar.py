@@ -1,22 +1,24 @@
 import math
 import os
 
+import matplotlib.pyplot as plt
 import torch
+import torch.nn.functional as F
+
+try:
+    import open3d as o3d
+
+    _HAS_O3D = True
+except Exception:
+    o3d = None
+    _HAS_O3D = False
+
 from gsplat.cuda._wrapper import (
     map_points_to_lidar_tiles,
     points_mapping_offset_encode,
     populate_image_from_points,
 )
 from gsplat.rendering import lidar_rasterization
-
-import test_camera as TC
-from config import MAP_CENTER
-from data_types import GaussianData
-from models import GSModel
-from util import calculate_viewmats
-
-# 环境配置
-os.environ["TORCH_CUDA_ARCH_LIST"] = "12.0"
 
 
 def setup_device() -> torch.device:
@@ -25,21 +27,15 @@ def setup_device() -> torch.device:
     return torch.device("cuda")
 
 
-def setup_gaussians_from_model(device: torch.device, model_path: str):
-    """从GSModel加载高斯数据并生成激光雷达特征。
-
-    返回: means, quats, scales, opacities, lidar_features
-    """
-    if not (model_path and os.path.exists(model_path)):
-        raise FileNotFoundError(f"模型文件不存在: {model_path}")
-    model = GSModel.load_from_pth(model_path).to_device(device)
-    components = list(model.components.values())
-    data = GaussianData.from_components(components)
-    if data is None:
-        raise RuntimeError("模型未包含任何高斯组件")
-    means, quats, scales, opacities, colors = data.to_render_args()
-    intensity = colors.reshape(colors.shape[0], -1).mean(dim=-1, keepdim=True)
-    return means, quats, scales, opacities.squeeze(-1), intensity
+def setup_gaussians(N: int, device: torch.device):
+    """构建随机高斯场景（位置、四元数、尺度、不透明度、特征、速度）。"""
+    means = (torch.rand(N, 1, device=device) * 100 + 20) * F.normalize(torch.randn(N, 3, device=device), dim=-1)
+    quats = F.normalize(torch.randn(N, 4, device=device))
+    scales = torch.rand(N, 3, device=device) + 0.1
+    opacities = torch.rand(N, device=device)
+    features = torch.randn(N, 16, device=device)
+    velocities = torch.randn(N, 3, device=device) * 2
+    return means, quats, scales, opacities, features, velocities
 
 
 def setup_lidar_params():
@@ -107,72 +103,21 @@ def generate_point_cloud(
     return point_cloud, azimuths, elevations
 
 
-def collect_gaussians_from_model_and_scenario(device: torch.device):
-    """从模型与 test_camera 场景组装静态与动态高斯，并生成强度特征。"""
-    model_path = TC.CONFIG["model_path"]
-    model = GSModel.load_from_pth(model_path).to_device(device)
-
-    background = model.get_component("background")
-    sky = model.get_component("sky")
-    actors = model.get_components_by_type("obj")
-    actor_map = {a.name: a for a in actors}
-
-    means_list = []
-    quats_list = []
-    scales_list = []
-    opacities_list = []
-    features_list = []
-
-    for comp in [background, sky]:
-        if comp is None:
-            continue
-        means_list.append(comp.get_xyz())
-        quats_list.append(comp.get_quats())
-        scales_list.append(comp.get_scales())
-        opacities_list.append(comp.get_opacities())
-        features_list.append(comp.get_colors().reshape(comp.num_points, -1).mean(dim=-1, keepdim=True))
-
-    init_params, frame_params = TC.create_test_scenario()
-    for v in frame_params.env_vehicles:
-        comp = actor_map.get(v.type)
-        if comp is None:
-            continue
-        position = torch.tensor(v.trajectory, device=device, dtype=torch.float32) - torch.tensor(
-            MAP_CENTER, device=device
-        )
-        means_list.append(comp.get_xyz(v.yaw, position))
-        quats_list.append(comp.get_quats(v.yaw))
-        scales_list.append(comp.get_scales())
-        opacities_list.append(comp.get_opacities())
-        features_list.append(comp.get_colors().reshape(comp.num_points, -1).mean(dim=-1, keepdim=True))
-
-    means = torch.cat(means_list)
-    quats = torch.cat(quats_list)
-    scales = torch.cat(scales_list)
-    opacities = torch.cat(opacities_list).squeeze(-1)
-    features = torch.cat(features_list)
-    return means, quats, scales, opacities, features, init_params, frame_params
-
-
 def build_raster_pts(
     point_cloud: torch.Tensor,
     azimuths: torch.Tensor,
     elevations: torch.Tensor,
     azimuth_resolution: float,
     min_azimuth: float,
-    min_elevation: float,
-    max_elevation: float,
     tile_width: int,
     tile_height: int,
 ):
     """根据点云与瓦片设置生成 raster_pts 与边界/偏移。"""
-    n_elev_tiles = math.ceil(elevations.numel() / tile_height)
-    elevation_boundaries = torch.linspace(
-        min_elevation - 1.0,
-        max_elevation + 1.0,
-        n_elev_tiles + 1,
-        device=elevations.device,
-    )
+    elevation_boundaries = torch.cat([
+        elevations[0:1] - 1.0,
+        (elevations[tile_height::tile_height] + elevations[tile_height - 1 : -1 : tile_height]) / 2,
+        elevations[-1:] + 1.0,
+    ])
 
     points_tile_ids, flatten_ids = map_points_to_lidar_tiles(
         points2d=point_cloud[None, :, :2],
@@ -185,7 +130,7 @@ def build_raster_pts(
         points_tile_ids,
         1,
         math.ceil((azimuths[-1] - azimuths[0]) / (azimuth_resolution * tile_width)),
-        n_elev_tiles,
+        len(elevations) // tile_height,
     )
 
     raster_pts = populate_image_from_points(
@@ -207,7 +152,7 @@ def run_rasterization(
     scales: torch.Tensor,
     opacities: torch.Tensor,
     features: torch.Tensor,
-    velocities: torch.Tensor | None,
+    velocities: torch.Tensor,
     viewmats: torch.Tensor,
     raster_pts: torch.Tensor,
     elevation_boundaries: torch.Tensor,
@@ -221,14 +166,14 @@ def run_rasterization(
     tile_height: int,
 ):
     """执行激光雷达栅格化并返回主要结果。"""
-    C = viewmats.shape[0]
-    features = features if features.dim() == 3 else features.unsqueeze(0).expand(C, -1, -1).contiguous()
+    lidar_features = features.unsqueeze(0)
+    print(f"{lidar_features.shape=}")
     rendered_feat, rendered_alpha, alpha_sum_until_points, meta_info = lidar_rasterization(
         means=means,
         quats=quats,
         scales=scales,
         opacities=opacities,
-        lidar_features=features,
+        lidar_features=lidar_features,
         velocities=velocities,
         viewmats=viewmats,
         raster_pts=raster_pts[..., :4],
@@ -245,121 +190,196 @@ def run_rasterization(
     return rendered_feat, rendered_alpha, alpha_sum_until_points, meta_info
 
 
-def save_rendered_feat_panorama(rendered_feat: torch.Tensor, out_dir: str, v_scale: int = 8):
-    """保存渲染后的 LiDAR 全景图（上采样+归一化），更适合人眼观看。
+def postprocess_predictions(
+    rendered_feat: torch.Tensor,
+    rendered_alpha: torch.Tensor,
+    raster_pts: torch.Tensor,
+    meta_info: dict,
+):
+    """从渲染结果中提取有效像素并返回球坐标、xyz 坐标与深度图。"""
+    rendered_expected_depth = rendered_feat[..., -1]
+    rendered_median_depth = meta_info["median_depths"]
+    rendered_feat = rendered_feat[..., :-1]
 
-    参数:
-        rendered_feat: 形状 [H, W, D+1] 或 [C, H, W, D+1] 的张量。
-                       - rendered_feat[..., 0]: 强度（建议范围 [0,1]）
-                       - rendered_feat[..., -1]: 期望距离（需归一化）
-        out_dir: 输出目录，例如 "outputs"。
-        v_scale: 垂直方向上采样倍率，默认 8。32×8=256 更易读。
+    valid_pixels = (rendered_alpha > 0).any(dim=-1)
+    valid_raster_pts = raster_pts[valid_pixels]
+    valid_rendered_expected_depth = rendered_expected_depth[valid_pixels]
+    valid_rendered_median_depth = rendered_median_depth[valid_pixels].squeeze(-1)
 
-    生成:
-        - panorama_intensity.png：上采样后的强度图，灰度。
-        - panorama_expected_distance.png：上采样后的期望距离图，分位归一化灰度。
-    """
-    from PIL import Image
-    import os
-    import numpy as np
-    import torch.nn.functional as F
+    pred_points_spherical = torch.cat([valid_raster_pts[..., :2], valid_rendered_expected_depth[:, None]], dim=-1)
 
-    os.makedirs(out_dir, exist_ok=True)
+    pred_points_xyz_expected_depth = torch.stack(
+        [
+            torch.cos(pred_points_spherical[..., 1].deg2rad())
+            * torch.cos(pred_points_spherical[..., 0].deg2rad())
+            * pred_points_spherical[..., 2],
+            torch.cos(pred_points_spherical[..., 1].deg2rad())
+            * torch.sin(pred_points_spherical[..., 0].deg2rad())
+            * pred_points_spherical[..., 2],
+            torch.sin(pred_points_spherical[..., 1].deg2rad()) * pred_points_spherical[..., 2],
+        ],
+        dim=-1,
+    )
 
-    feat = rendered_feat
-    if feat.dim() == 4:  # [C, H, W, *]
-        feat = feat[0]
+    pred_points_xyz_median_depth = torch.stack(
+        [
+            torch.cos(pred_points_spherical[..., 1].deg2rad())
+            * torch.cos(pred_points_spherical[..., 0].deg2rad())
+            * valid_rendered_median_depth,
+            torch.cos(pred_points_spherical[..., 1].deg2rad())
+            * torch.sin(pred_points_spherical[..., 0].deg2rad())
+            * valid_rendered_median_depth,
+            torch.sin(pred_points_spherical[..., 1].deg2rad()) * valid_rendered_median_depth,
+        ],
+        dim=-1,
+    )
 
-    # [H, W, *] -> [1, 1, H, W, *] 便于插值
-    H, W = feat.shape[:2]
-    intensity = feat[..., 0].unsqueeze(0).unsqueeze(0)  # [1,1,H,W]
-    expected_dist = feat[..., -1].unsqueeze(0).unsqueeze(0)
-
-    # 仅对 H 做上采样，W 保持不变（也可按需横向缩放）
-    new_H = int(H * v_scale)
-    intensity_up = F.interpolate(intensity, size=(new_H, W), mode="bilinear", align_corners=False)
-    expected_up = F.interpolate(expected_dist, size=(new_H, W), mode="bilinear", align_corners=False)
-
-    # 强度裁剪到 [0,1]
-    inten_img = intensity_up.squeeze().detach().cpu().numpy().astype(np.float32)
-    inten_img = np.clip(inten_img, 0.0, 1.0)
-    Image.fromarray((inten_img * 255.0).astype(np.uint8)).save(os.path.join(out_dir, "panorama_intensity.png"))
-
-    # 期望距离分位归一化到 [0,1]
-    dist_img = expected_up.squeeze().detach().cpu().numpy().astype(np.float32)
-    lo, hi = np.percentile(dist_img, 1.0), np.percentile(dist_img, 99.0)
-    dist_img = np.clip((dist_img - lo) / (hi - lo + 1e-6), 0.0, 1.0)
-    Image.fromarray((dist_img * 255.0).astype(np.uint8)).save(
-        os.path.join(out_dir, "panorama_expected_distance.png")
+    return (
+        pred_points_spherical,
+        pred_points_xyz_expected_depth,
+        pred_points_xyz_median_depth,
+        rendered_expected_depth,
+        rendered_median_depth,
     )
 
 
-def save_bev_from_rendered_feat(
-    rendered_feat: torch.Tensor,
-    min_azimuth: float,
-    max_azimuth: float,
-    min_elevation: float,
-    max_elevation: float,
-    azimuth_resolution: float,
-    out_path: str = "outputs/bev_intensity.png",
-    meters_per_pixel: float = 0.2,
-    bev_size: int = 512,
-    use_alpha_weight: bool = True,
+def save_visualizations(
+    output_dir: str,
+    raster_pts: torch.Tensor,
+    expected_depth_map: torch.Tensor,
+    median_depth_map: torch.Tensor,
+    pred_points_spherical: torch.Tensor,
+    pred_points_xyz_expected_depth: torch.Tensor,
+    pred_points_xyz_median_depth: torch.Tensor,
 ):
-    """将渲染结果重投影为 BEV 鸟瞰图并保存，更符合人眼直觉。
+    """保存栅格化与预测结果的可视化图片到指定目录。"""
+    os.makedirs(output_dir, exist_ok=True)
+
+    range_img = raster_pts[0, ..., 2].detach().cpu().numpy()
+    fig = plt.figure()
+    ax = fig.add_subplot(111)
+    ax.set_title("Range Image")
+    im = ax.imshow(range_img, cmap="gray")
+    fig.colorbar(im, ax=ax)
+    fig.savefig(os.path.join(output_dir, "raster_range.png"), dpi=200, bbox_inches="tight")
+    plt.close(fig)
+
+    if raster_pts.shape[-1] >= 5:
+        intensity_img = raster_pts[0, ..., 4].detach().cpu().numpy()
+        fig = plt.figure()
+        ax = fig.add_subplot(111)
+        ax.set_title("Intensity Image")
+        im = ax.imshow(intensity_img, cmap="gray")
+        fig.colorbar(im, ax=ax)
+        fig.savefig(os.path.join(output_dir, "raster_intensity.png"), dpi=200, bbox_inches="tight")
+        plt.close(fig)
+
+    exp_depth = expected_depth_map[0].detach().cpu().numpy()
+    fig = plt.figure()
+    ax = fig.add_subplot(111)
+    ax.set_title("Expected Depth Map")
+    im = ax.imshow(exp_depth, cmap="viridis")
+    fig.colorbar(im, ax=ax)
+    fig.savefig(os.path.join(output_dir, "expected_depth_map.png"), dpi=200, bbox_inches="tight")
+    plt.close(fig)
+
+    med_depth = median_depth_map[0].detach().cpu().numpy().squeeze(-1)
+    fig = plt.figure()
+    ax = fig.add_subplot(111)
+    ax.set_title("Median Depth Map")
+    im = ax.imshow(med_depth, cmap="viridis")
+    fig.colorbar(im, ax=ax)
+    fig.savefig(os.path.join(output_dir, "median_depth_map.png"), dpi=200, bbox_inches="tight")
+    plt.close(fig)
+
+    sph = pred_points_spherical.detach().cpu().numpy()
+    fig = plt.figure()
+    ax = fig.add_subplot(111)
+    ax.set_title("Spherical Scatter (Expected Depth)")
+    sc = ax.scatter(sph[:, 0], sph[:, 1], s=0.2, c=sph[:, 2], cmap="viridis")
+    ax.set_xlabel("Azimuth")
+    ax.set_ylabel("Elevation")
+    ax.axis("equal")
+    fig.colorbar(sc, ax=ax)
+    fig.savefig(
+        os.path.join(output_dir, "spherical_expected_depth_scatter.png"),
+        dpi=200,
+        bbox_inches="tight",
+    )
+    plt.close(fig)
+
+    exp_xyz = pred_points_xyz_expected_depth.detach().cpu().numpy()
+    fig = plt.figure()
+    ax = fig.add_subplot(111, projection="3d")
+    ax.set_title("Predicted Point Cloud (Expected Depth)")
+    ax.scatter(exp_xyz[:, 0], exp_xyz[:, 1], exp_xyz[:, 2], s=0.2)
+    fig.savefig(
+        os.path.join(output_dir, "pred_cloud_expected_depth_3d.png"),
+        dpi=200,
+        bbox_inches="tight",
+    )
+    plt.close(fig)
+
+    med_xyz = pred_points_xyz_median_depth.detach().cpu().numpy()
+    fig = plt.figure()
+    ax = fig.add_subplot(111, projection="3d")
+    ax.set_title("Predicted Point Cloud (Median Depth)")
+    ax.scatter(med_xyz[:, 0], med_xyz[:, 1], med_xyz[:, 2], s=0.2)
+    fig.savefig(
+        os.path.join(output_dir, "pred_cloud_median_depth_3d.png"),
+        dpi=200,
+        bbox_inches="tight",
+    )
+    plt.close(fig)
+
+    if _HAS_O3D:
+        save_point_cloud_open3d(
+            output_dir,
+            pred_points_xyz_expected_depth,
+            pred_points_spherical[:, 2],
+            show_window=True,
+        )
+    else:
+        print("Open3D 未安装，跳过 Open3D 点云导出与交互显示。可通过 `pip install open3d` 安装后重试。")
+
+
+def save_point_cloud_open3d(
+    output_dir: str,
+    points_xyz: torch.Tensor,
+    color_values: torch.Tensor,
+    show_window: bool = False,
+):
+    """使用 Open3D 可视化并导出点云。
 
     参数:
-        rendered_feat: 渲染结果，形状 [H, W, D+1] 或 [C, H, W, D+1]。
-                       - rendered_feat[..., 0]: 强度
-                       - rendered_feat[..., -1]: 期望距离（当作 range 使用）
-        min_azimuth, max_azimuth, min_elevation, max_elevation, azimuth_resolution:
-            渲染所用的激光雷达参数，用于恢复每个像素的角度值。
-        out_path: 输出 BEV 图片路径。
-        meters_per_pixel: BEV 每像素空间分辨率（米/像素）。
-        bev_size: BEV 图尺寸（方形，bev_size×bev_size）。
-        use_alpha_weight: 若你也有 rendered_alpha，可用其权重提升视觉对比度（此函数假定强度已是体渲染结果，默认 True）。
-
-    行为:
-        - 用期望距离作为 range，将 [azim, elev] 转到 (x, y) 平面。
-        - 在平面栅格累计强度（可做 max/mean，这里用 sum 简化）。
+    - output_dir: 输出目录
+    - points_xyz: 点云坐标，形状为 [K, 3]
+    - color_values: 与点对应的标量，用于着色（例如深度），形状为 [K]
+    - show_window: 是否弹出交互式窗口
     """
-    from PIL import Image
-    import numpy as np
+    os.makedirs(output_dir, exist_ok=True)
 
-    feat = rendered_feat
-    if feat.dim() == 4:  # [C, H, W, *]
-        feat = feat[0]
-    H, W = feat.shape[:2]
+    pts = points_xyz.detach().cpu().numpy()
+    vals = color_values.detach().cpu().numpy()
 
-    # 恢复每个像素的角度网格（保证形状为 [H, W]）
-    azims = torch.linspace(min_azimuth, max_azimuth - azimuth_resolution, W, device=feat.device).deg2rad()
-    elevs = torch.linspace(min_elevation, max_elevation, H, device=feat.device).deg2rad()
-    # 使用 indexing="ij" 并传入 (elevs, azims) 保证输出为 [H, W]
-    elev_grid, azim_grid = torch.meshgrid(elevs, azims, indexing="ij")
+    vmin = float(vals.min()) if vals.size > 0 else 0.0
+    vmax = float(vals.max()) if vals.size > 0 else 1.0
+    norm = plt.Normalize(vmin=vmin, vmax=vmax)
+    cmap = plt.get_cmap("viridis")
+    cols = cmap(norm(vals))[:, :3]
 
-    # 距离/强度
-    ranges = feat[..., -1]  # [H, W]
-    intens = feat[..., 0]   # [H, W]
+    pcd = o3d.geometry.PointCloud()
+    pcd.points = o3d.utility.Vector3dVector(pts.astype(float))
+    pcd.colors = o3d.utility.Vector3dVector(cols.astype(float))
 
-    # 由球坐标到平面 (x,y)
-    cos_e = torch.cos(elev_grid)
-    x = cos_e * torch.cos(azim_grid) * ranges  # [H, W]
-    y = cos_e * torch.sin(azim_grid) * ranges  # [H, W]
+    ply_path = os.path.join(output_dir, "pred_cloud_expected_depth_open3d.ply")
+    o3d.io.write_point_cloud(ply_path, pcd, write_ascii=False)
 
-    # 将 (x,y) 映射到 BEV 栅格坐标
-    u = (x / meters_per_pixel + bev_size / 2).long()
-    v = (y / meters_per_pixel + bev_size / 2).long()
-    mask = (u >= 0) & (u < bev_size) & (v >= 0) & (v < bev_size)
-
-    bev = torch.zeros((bev_size, bev_size), device=feat.device, dtype=torch.float32)
-    # 累计强度（sum），如需更锐利可改为最大值聚合
-    bev.index_put_((u[mask], v[mask]), intens[mask], accumulate=True)
-    bev = torch.clamp(bev, 0.0, 1.0)
-
-    # 保存
-    bev_img = bev.detach().cpu().numpy().astype(np.float32)
-    bev_img8 = (bev_img * 255.0).astype(np.uint8)
-    Image.fromarray(bev_img8).save(out_path)
+    if show_window:
+        try:
+            o3d.visualization.draw_geometries([pcd])
+        except Exception as e:
+            print(f"Open3D 交互显示失败: {e}. 已导出 PLY 文件到 {ply_path}")
 
 
 def main():
@@ -367,15 +387,15 @@ def main():
     torch.manual_seed(42)
     device = setup_device()
 
+    C, N = 1, 1_000_000
     (
         means,
         quats,
         scales,
         opacities,
         features,
-        init_params,
-        frame_params,
-    ) = collect_gaussians_from_model_and_scenario(device)
+        velocities,
+    ) = setup_gaussians(N, device)
 
     (
         azimuth_resolution,
@@ -403,22 +423,11 @@ def main():
         elevations,
         azimuth_resolution,
         min_azimuth,
-        min_elevation,
-        max_elevation,
         tile_width,
         tile_height,
     )
 
-    cameras = init_params.cameras
-    C = len(cameras)
-    extrinsics_list = [cam.extrinsics for cam in cameras]
-    ego_yaw = frame_params.ego_yaw
-    ego_position = torch.tensor(frame_params.ego_trajectory, device=device, dtype=torch.float32) - torch.tensor(
-        MAP_CENTER, device=device
-    )
-    viewmats = calculate_viewmats(extrinsics_list, ego_yaw, ego_position)
-    if raster_pts.shape[0] != C:
-        raster_pts = raster_pts.repeat(C, 1, 1, 1)
+    viewmats = torch.eye(4, device=device).unsqueeze(0)
 
     rendered_feat, rendered_alpha, alpha_sum_until_points, meta_info = run_rasterization(
         means,
@@ -426,7 +435,7 @@ def main():
         scales,
         opacities,
         features,
-        None,
+        velocities,
         viewmats,
         raster_pts,
         elevation_boundaries,
@@ -439,24 +448,34 @@ def main():
         tile_width,
         tile_height,
     )
-    print(f"{rendered_feat.shape=}")
-    print(f"{rendered_alpha.shape=}")
-    print(f"{alpha_sum_until_points.shape=}")
 
-    # 更友好的可视化输出
-    os.makedirs("outputs", exist_ok=True)
-    save_rendered_feat_panorama(rendered_feat, out_dir="outputs", v_scale=8)
-    save_bev_from_rendered_feat(
-        rendered_feat,
-        min_azimuth=min_azimuth,
-        max_azimuth=max_azimuth,
-        min_elevation=min_elevation,
-        max_elevation=max_elevation,
-        azimuth_resolution=azimuth_resolution,
-        out_path="outputs/bev_intensity.png",
-        meters_per_pixel=0.2,
-        bev_size=512,
+    (
+        pred_points_spherical,
+        pred_points_xyz_expected_depth,
+        pred_points_xyz_median_depth,
+        expected_depth_map,
+        median_depth_map,
+    ) = postprocess_predictions(rendered_feat, rendered_alpha, raster_pts, meta_info)
+
+    save_visualizations(
+        os.path.join("examples", "outputs"),
+        raster_pts,
+        expected_depth_map,
+        median_depth_map,
+        pred_points_spherical,
+        pred_points_xyz_expected_depth,
+        pred_points_xyz_median_depth,
     )
+
+    print({
+        "rendered_feat": tuple(rendered_feat.shape),
+        "rendered_alpha": tuple(rendered_alpha.shape),
+        "raster_pts": tuple(raster_pts.shape),
+        "pred_points_spherical": tuple(pred_points_spherical.shape),
+        "pred_points_xyz_expected_depth": tuple(pred_points_xyz_expected_depth.shape),
+        "pred_points_xyz_median_depth": tuple(pred_points_xyz_median_depth.shape),
+    })
+
 
 if __name__ == "__main__":
     main()

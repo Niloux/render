@@ -21,7 +21,7 @@ CONFIG = {
     "warmup_frames": 10,
     "benchmark_frames": 100,
     "save_first_frame": True,
-    "camera_count": 1,
+    "camera_count": 10,
     "resolution": (1600, 1066),
 }
 
@@ -42,7 +42,16 @@ STANDARD_INTRINSICS = [
 
 def create_test_cameras(count: int, width: int, height: int) -> list[Camera]:
     """创建测试相机列表"""
-    return [Camera(f"camera{i + 1}", STANDARD_EXTRINSICS, STANDARD_INTRINSICS, width, height) for i in range(count)]
+    return [
+        Camera(
+            f"camera{i + 1}",
+            STANDARD_EXTRINSICS,
+            STANDARD_INTRINSICS,
+            width,
+            height,
+        )
+        for i in range(count)
+    ]
 
 
 def create_test_scenario() -> tuple[InitParams, FrameParams]:

@@ -1,6 +1,7 @@
 import math
 
 import torch
+
 from gsplat import (
     fully_fused_projection,
     isect_offset_encode,
@@ -117,8 +118,9 @@ def render_native(means, quats, scales, opacities, colors, viewmats, Ks, img_wid
 
     # 使用rasterization函数的内置球谐函数处理
     # colors保持[N, 4, 3]形状，设置sh_degree=1让rasterization内部处理球谐函数
-    # 关键修复：添加rasterize_mode="antialiased"启用抗锯齿补偿，消除渲染裂痕
-    # print(f"{viewmats.shape=}")
+    # TODO:colors应该在前期做好camera和lidar的分离，后面再优化吧
+    if colors.dim() == 3 and colors.shape[1] == 4 and colors.shape[2] == 5:
+        colors = colors[..., :3]
 
     render_colors, render_alphas, _ = rasterization(
         means=means,
