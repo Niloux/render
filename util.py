@@ -2,7 +2,6 @@ import os
 import time
 from typing import Dict, List
 
-import numpy as np
 import torch
 from PIL import Image
 

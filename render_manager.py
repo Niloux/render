@@ -1,11 +1,13 @@
 from typing import Dict, List, Tuple
 
 import torch
+from gsplat.rendering import lidar_rasterization
 
 from config import MAP_CENTER
-from data_types import Camera, FrameParams, FrameResp, GaussianData, InitParams, InitResp, Vehicle
+from data_types import Camera, FrameParams, FrameResp, GaussianData, InitParams, InitResp, Lidar, Vehicle
+from gsplat import spherical_harmonics
 from models import GaussianComponent, GSModel
-from render_kernel import render
+from render_kernel import build_raster_pts, extract_camera_centers, generate_point_cloud, render
 from util import calculate_viewmats
 
 
@@ -26,6 +28,10 @@ class RenderManager:
         # 预构建环境车name到点云的映射
         self.actor_map: Dict[str, GaussianComponent] = {actor.name: actor for actor in self.actors}
         self._setup_render_buffers()
+        self.lidars: Dict[str, Lidar] = {}
+        self.lidar_data: Dict[str, Dict] = {}
+        self.render_camera: bool = True
+        self.render_lidar: bool = False
 
     def _setup_render_buffers(self) -> None:
         """预分配渲染buffers，消除每帧内存分配
@@ -106,6 +112,9 @@ class RenderManager:
 
         预计算所有相机数据，消除运行时查找和转换
         """
+        # 渲染开关与模型路径
+        self.render_camera = bool(getattr(params, "render_camera", True))
+        self.render_lidar = bool(getattr(params, "render_lidar", False))
         # 按照分辨率对输入camera进行分类
         grouped = {}
         for i in params.cameras:
@@ -137,6 +146,45 @@ class RenderManager:
             }
 
         resp = InitResp(init_status=True)
+
+        # 预计算激光雷达相关数据
+        if params.lidars:
+            for lidar in params.lidars:
+                self.lidars[lidar.id] = lidar
+                point_cloud, azimuths, elevations = generate_point_cloud(
+                    lidar.azimuth_resolution,
+                    lidar.min_azimuth,
+                    lidar.max_azimuth,
+                    lidar.n_elevation_channels,
+                    lidar.min_elevation,
+                    lidar.max_elevation,
+                    self.device,
+                )
+                raster_pts, elevation_boundaries = build_raster_pts(
+                    point_cloud,
+                    azimuths,
+                    elevations,
+                    lidar.azimuth_resolution,
+                    lidar.min_azimuth,
+                    lidar.tile_width,
+                    lidar.tile_height,
+                )
+                self.lidar_data[lidar.id] = {
+                    "extrinsics": lidar.extrinsics,
+                    "azimuths": azimuths,
+                    "elevations": elevations,
+                    "elevation_boundaries": elevation_boundaries,
+                    "image_width": azimuths.shape[0],
+                    "image_height": elevations.shape[0],
+                    "tile_width": lidar.tile_width,
+                    "tile_height": lidar.tile_height,
+                    "min_azimuth": lidar.min_azimuth,
+                    "max_azimuth": lidar.max_azimuth,
+                    "min_elevation": lidar.min_elevation,
+                    "max_elevation": lidar.max_elevation,
+                    "azimuth_resolution": lidar.azimuth_resolution,
+                    "raster_pts": raster_pts,
+                }
         return resp
 
     def render_frame(self, params: FrameParams) -> FrameResp:
@@ -162,22 +210,97 @@ class RenderManager:
 
         images = {}
         # 使用预计算的相机数据，零查找开销
-        for resolution, cam_data in self.camera_data.items():
-            # 直接使用预计算的数据，无需运行时转换
-            camera_ids = cam_data["camera_ids"]
-            extrinsics_list = cam_data["extrinsics_list"]
-            Ks = cam_data["intrinsics_tensor"]
-            width = cam_data["width"]
-            height = cam_data["height"]
+        if self.render_camera:
+            for resolution, cam_data in self.camera_data.items():
+                # 直接使用预计算的数据，无需运行时转换
+                camera_ids = cam_data["camera_ids"]
+                extrinsics_list = cam_data["extrinsics_list"]
+                Ks = cam_data["intrinsics_tensor"]
+                width = cam_data["width"]
+                height = cam_data["height"]
 
-            viewmats = calculate_viewmats(extrinsics_list, ego_heading, ego_position)
+                viewmats = calculate_viewmats(extrinsics_list, ego_heading, ego_position)
 
-            # 渲染并收集结果 - 直接传递预分配buffer参数
-            batch_colors, batch_alphas = render(
-                render_means, render_quats, render_scales, render_opacities, render_colors, viewmats, Ks, width, height
-            )
-            batch_colors = (batch_colors.clamp(0, 1) * 255).to(torch.uint8)
-            for cam_id, image in zip(camera_ids, batch_colors):
-                images[cam_id] = image
+                # 渲染并收集结果 - 直接传递预分配buffer参数
+                batch_colors, batch_alphas = render(
+                    render_means,
+                    render_quats,
+                    render_scales,
+                    render_opacities,
+                    render_colors,
+                    viewmats,
+                    Ks,
+                    width,
+                    height,
+                )
+                batch_colors = (batch_colors.clamp(0, 1) * 255).to(torch.uint8)
+                for cam_id, image in zip(camera_ids, batch_colors):
+                    images[cam_id] = image
 
-        return FrameResp(params.timestamp, images)
+        # 激光雷达渲染
+        lidars = {}
+        if self.render_lidar:
+            for lidar_id, lidar_cfg in self.lidar_data.items():
+                viewmats = calculate_viewmats([lidar_cfg["extrinsics"]], ego_heading, ego_position)
+                lidar_features = self._compute_lidar_features_from_colors(render_colors, render_means, viewmats)
+                rendered_feat, rendered_alpha, alpha_sum_until_points, meta_info = lidar_rasterization(
+                    means=render_means,
+                    quats=render_quats,
+                    scales=render_scales,
+                    opacities=render_opacities.squeeze(-1),
+                    lidar_features=lidar_features,
+                    velocities=None,
+                    viewmats=viewmats,
+                    raster_pts=lidar_cfg["raster_pts"][..., :4],
+                    tile_elevation_boundaries=lidar_cfg["elevation_boundaries"],
+                    min_azimuth=lidar_cfg["min_azimuth"],
+                    max_azimuth=lidar_cfg["max_azimuth"],
+                    min_elevation=lidar_cfg["min_elevation"],
+                    max_elevation=lidar_cfg["max_elevation"],
+                    n_elevation_channels=lidar_cfg["elevations"].shape[0],
+                    azimuth_resolution=lidar_cfg["azimuth_resolution"],
+                    tile_width=lidar_cfg["tile_width"],
+                    tile_height=lidar_cfg["tile_height"],
+                    near_plane=self.lidars[lidar_id].near_plane if lidar_id in self.lidars else 0.01,
+                    far_plane=self.lidars[lidar_id].far_plane if lidar_id in self.lidars else 1e10,
+                )
+                lidars[lidar_id] = rendered_feat
+
+        return FrameResp(timestamp=params.timestamp, images=images, error_msg=None, lidars=lidars)
+
+    def _compute_lidar_features_from_colors(
+        self,
+        colors: torch.Tensor,
+        means: torch.Tensor,
+        viewmats: torch.Tensor,
+    ) -> torch.Tensor:
+        """从`render_colors`中提取雷达通道并转换为`[C, N, 2]`的`lidar_features`。
+
+        - 输入`colors`形状为`[N, K, D]`，其中`K`为启用的球谐基数量（通常为4，对应degree=1），
+          `D`为每个基的通道数；当`D>=5`时，假定前3个通道为相机渲染用，后2个通道为雷达特征系数。
+        - 为了与球谐评估接口保持一致，将雷达的2通道系数在最后一维填充一个0，形成3通道，
+          使用同样的degree=1进行方向相关的评估，然后只保留前2个通道作为雷达特征。
+        - 如果`colors`不含雷达通道（例如`D==3`），则返回零特征以保持向后兼容。
+        """
+        C = viewmats.shape[0]
+        N = means.shape[0]
+        device = self.device
+
+        if colors.dim() != 3:
+            return torch.zeros(C, N, 2, device=device, dtype=torch.float32)
+
+        D = colors.shape[-1]
+        K = colors.shape[1]
+        if D < 5 or K < 4:
+            return torch.zeros(C, N, 2, device=device, dtype=colors.dtype)
+
+        camera_centers = extract_camera_centers(viewmats)  # [C, 3]
+        dirs = means[None, :, :] - camera_centers[:, None, :]  # [C, N, 3]
+
+        lidar_coeffs = colors[..., 3:5]  # [N, K, 2]
+        zeros_third = torch.zeros((N, K, 1), device=device, dtype=colors.dtype)
+        lidar_coeffs_pad = torch.cat([lidar_coeffs, zeros_third], dim=-1)  # [N, K, 3]
+        shs = lidar_coeffs_pad.unsqueeze(0).expand(C, -1, -1, -1)  # [C, N, K, 3]
+
+        feats = spherical_harmonics(1, dirs, shs)  # [C, N, 3]
+        return feats[..., :2]
