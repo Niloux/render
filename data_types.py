@@ -117,17 +117,19 @@ class InitParams:
             ]
             if all(k in data for k in single_keys):
                 lidars = [
-                    Lidar.from_json({
-                        "id": data.get("lidar_id", "lidar_0"),
-                        "extrinsics": data["lidar_extrinsics"],
-                        "far_plane": data["Far_lidar"],
-                        "near_plane": data["Near_lidar"],
-                        "h_fov": data["H_FOV"],
-                        "v_fov_up": data["V_FOV_up"],
-                        "v_fov_down": data["V_FOV_down"],
-                        "h_lidar": data["H_lidar"],
-                        "w_lidar": data["W_lidar"],
-                    })
+                    Lidar.from_json(
+                        {
+                            "id": data.get("lidar_id", "lidar_0"),
+                            "extrinsics": data["lidar_extrinsics"],
+                            "far_plane": data["Far_lidar"],
+                            "near_plane": data["Near_lidar"],
+                            "h_fov": data["H_FOV"],
+                            "v_fov_up": data["V_FOV_up"],
+                            "v_fov_down": data["V_FOV_down"],
+                            "h_lidar": data["H_lidar"],
+                            "w_lidar": data["W_lidar"],
+                        }
+                    )
                 ]
 
         render_camera = bool(data.get("render_camera", True))
@@ -308,8 +310,8 @@ class GaussianData:
 class FrameResp:
     timestamp: int
     images: Dict[str, torch.Tensor]
-    error_msg: Optional[str] = None
     lidars: Dict[str, torch.Tensor]
+    error_msg: Optional[str] = None
 
     def to_json(self) -> Dict:
         """将FrameResp对象转换为字典
@@ -325,11 +327,7 @@ class FrameResp:
                 "error_msg": null
             }
         """
-        return {
-            "timestamp": self.timestamp,
-            "images": self.images,
-            "error_msg": self.error_msg,
-        }
+        return {"timestamp": self.timestamp, "images": self.images, "error_msg": self.error_msg, "lidars": self.lidars}
 
 
 @dataclass

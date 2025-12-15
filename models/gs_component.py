@@ -44,14 +44,16 @@ class GaussianComponent:
     @property
     def memory_usage(self) -> float:
         """获取内存使用量（MB）。"""
-        total_bytes = sum([
-            self.xyz.numel() * self.xyz.element_size(),
-            self.feature_dc.numel() * self.feature_dc.element_size(),
-            self.feature_rest.numel() * self.feature_rest.element_size(),
-            self.scaling.numel() * self.scaling.element_size(),
-            self.rotation.numel() * self.rotation.element_size(),
-            self.opacity.numel() * self.opacity.element_size(),
-        ])
+        total_bytes = sum(
+            [
+                self.xyz.numel() * self.xyz.element_size(),
+                self.feature_dc.numel() * self.feature_dc.element_size(),
+                self.feature_rest.numel() * self.feature_rest.element_size(),
+                self.scaling.numel() * self.scaling.element_size(),
+                self.rotation.numel() * self.rotation.element_size(),
+                self.opacity.numel() * self.opacity.element_size(),
+            ]
+        )
 
         if self.semantic is not None:
             total_bytes += self.semantic.numel() * self.semantic.element_size()
@@ -77,7 +79,7 @@ class GaussianComponent:
         if (
             self.xyz.shape[1] != 3
             or self.feature_dc.shape[1:] != (1, 3)
-            or self.feature_rest.shape[1:] != (3, 3)
+            or self.feature_rest.shape[1:] != (8, 3)
             or self.scaling.shape[1] != 3
             or self.rotation.shape[1] != 4
             or self.opacity.shape[1] != 1

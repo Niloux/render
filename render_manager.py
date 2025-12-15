@@ -57,7 +57,7 @@ class RenderManager:
             "quats": torch.empty((total_max_points, 4), device=device, dtype=torch.float32),
             "scales": torch.empty((total_max_points, 3), device=device, dtype=torch.float32),
             "opacities": torch.empty((total_max_points, 1), device=device, dtype=torch.float32),
-            "colors": torch.empty((total_max_points, 4, 3), device=device, dtype=torch.float32),
+            "colors": torch.empty((total_max_points, 9, 3), device=device, dtype=torch.float32),
         }
 
         # 一次性拷贝静态数据到buffer前部，永不改变
@@ -207,7 +207,6 @@ class RenderManager:
         render_scales = self.render_buffer["scales"][:total_points]
         render_opacities = self.render_buffer["opacities"][:total_points]
         render_colors = self.render_buffer["colors"][:total_points]
-
         images = {}
         # 使用预计算的相机数据，零查找开销
         if self.render_camera:

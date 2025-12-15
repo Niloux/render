@@ -17,27 +17,23 @@ os.environ["TORCH_CUDA_ARCH_LIST"] = "12.0"
 
 # 测试配置
 CONFIG = {
-    "model_path": "/home/saimo/work/render/049_1020_combined.pth",
+    "model_path": "/home/saimo/work/render/yiqi_1212/iteration_180000.pth",
     "warmup_frames": 10,
     "benchmark_frames": 100,
     "save_first_frame": True,
-    "camera_count": 10,
-    "resolution": (1600, 1066),
+    "camera_count": 1,
+    "resolution": (3200, 1350),
 }
 
 # 标准相机参数
 STANDARD_EXTRINSICS = [
-    [0.70050184, 0.01403341, 0.71351261, 1.49638969],
-    [-0.71348128, -0.00800647, 0.70062855, 0.09523089],
-    [0.01554492, -0.99986947, 0.00440403, 2.11546921],
+    [0.003891, 0.025977, 0.999655, 2.039401],
+    [-0.999948, 0.009529, 0.003644, 0.006142],
+    [-0.009431, -0.999617, 0.026013, 1.486288],
     [0.0, 0.0, 0.0, 1.0],
 ]
 
-STANDARD_INTRINSICS = [
-    [1.73299677e03, 0.00000000e00, 8.42800381e02],
-    [0.00000000e00, 1.73299677e03, 5.25177181e02],
-    [0.00000000e00, 0.00000000e00, 1.00000000e00],
-]
+STANDARD_INTRINSICS = [[6099.5736, 0.0, 1605.47122], [0.0, 6100.29879, 927.925004], [0.0, 0.0, 1.0]]
 
 
 def create_test_cameras(count: int, width: int, height: int) -> list[Camera]:
@@ -63,18 +59,14 @@ def create_test_scenario() -> tuple[InitParams, FrameParams]:
     # 创建测试车辆
     # 43, 15
     vehicles = [
-        Vehicle([8228.21911375, 4679.84724959, 49.77610101], 0, "obj_016"),
-        Vehicle([8235.21911375, 4684.84724959, 49.77610101], 0, "obj_015"),
-        Vehicle([8240.21911375, 4684.14724959, 49.77610101], 0, "obj_034"),
-        # Vehicle([494.07811834, -149.71372052, -30.84144724], 1.728, "obj_016"),
-        # Vehicle([489.07811834, -145.71372052, -30.84144724], 1.728, "obj_010"),
+        Vehicle([-1070.146, 3554.094, 0.907585], 2.271827, "obj_006"),
     ]
 
     # 创建帧参数
     frame_params = FrameParams(
         # ego_trajectory=[8212.159, 4684.092, 48.765], ego_yaw=0, env_vehicles=vehicles, timestamp=20250912
-        ego_trajectory=[8243.53911375, 4682.85824959, 48.79490101],
-        ego_yaw=0.0118,
+        ego_trajectory=[-1062.67011, 3550.622584, 0.013875],
+        ego_yaw=2.26268,
         env_vehicles=vehicles,
         timestamp=20250912,
     )

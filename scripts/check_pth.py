@@ -57,7 +57,7 @@ def load_and_inspect_pth(pth_path):
 
 
 if __name__ == "__main__":
-    pth_path = "/home/saimo/work/3dgrut/runs/flowers_3dgrt/flowers-2910_092434/ckpt_last.pt"
+    pth_path = "/home/saimo/work/render/049_1020_combined.pth"
     # pth_path = "/home/saimo/work/render/049_1020.pth"
 
     checkpoint = load_and_inspect_pth(pth_path)
