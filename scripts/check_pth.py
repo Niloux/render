@@ -57,5 +57,6 @@ def load_and_inspect_pth(pth_path):
 
 
 if __name__ == "__main__":
-    pth_path = "049_1009.pth"
+    pth_path = "/home/app/3DGS/model/iteration_180000.pth"
+    # pth_path = "/home/app/3DGS/model/iteration_240000_1112.pth"
     checkpoint = load_and_inspect_pth(pth_path)

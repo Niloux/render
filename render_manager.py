@@ -47,7 +47,7 @@ class RenderManager:
             "quats": torch.empty((total_max_points, 4), device=device, dtype=torch.float32),
             "scales": torch.empty((total_max_points, 3), device=device, dtype=torch.float32),
             "opacities": torch.empty((total_max_points, 1), device=device, dtype=torch.float32),
-            "colors": torch.empty((total_max_points, 4, 3), device=device, dtype=torch.float32),
+            "colors": torch.empty((total_max_points, 9, 3), device=device, dtype=torch.float32),
         }
 
         # 一次性拷贝静态数据到buffer前部，永不改变

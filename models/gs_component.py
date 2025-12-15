@@ -70,7 +70,7 @@ class GaussianComponent:
         if (
             self.xyz.shape[1] != 3
             or self.feature_dc.shape[1:] != (1, 3)
-            or self.feature_rest.shape[1:] != (3, 3)
+            or self.feature_rest.shape[1:] != (8, 3)
             or self.scaling.shape[1] != 3
             or self.rotation.shape[1] != 4
             or self.opacity.shape[1] != 1
