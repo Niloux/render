@@ -78,7 +78,8 @@ class GaussianComponent:
         # 检查tensor维度
         if (
             self.xyz.shape[1] != 3
-            # TODO:
+            # TODO:这里的验证太傻逼了，球谐系数在不同的模型中维度不同
+            # TODO:可能需要通过读取配置文件来进行维度验证
             or self.feature_dc.shape[1:] != (1, 5)
             or self.feature_rest.shape[1:] != (3, 5)
             or self.scaling.shape[1] != 3

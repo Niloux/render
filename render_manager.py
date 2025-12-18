@@ -57,6 +57,7 @@ class RenderManager:
             "quats": torch.empty((total_max_points, 4), device=device, dtype=torch.float32),
             "scales": torch.empty((total_max_points, 3), device=device, dtype=torch.float32),
             "opacities": torch.empty((total_max_points, 1), device=device, dtype=torch.float32),
+            # TODO:这里的颜色维度也需要根据模型来进行调整
             "colors": torch.empty((total_max_points, 4, 5), device=device, dtype=torch.float32),
         }
 
