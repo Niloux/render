@@ -57,7 +57,7 @@ def load_and_inspect_pth(pth_path):
 
 
 if __name__ == "__main__":
-    pth_path = "/home/saimo/work/render/049_1020_combined.pth"
-    # pth_path = "/home/saimo/work/render/049_1020.pth"
+    pth_path = "/home/saimo/work/render/049_multimodal.pth"
+    # pth_path = "/home/saimo/work/render/yiqi_1212/iteration_180000.pth"
 
     checkpoint = load_and_inspect_pth(pth_path)

@@ -17,23 +17,36 @@ os.environ["TORCH_CUDA_ARCH_LIST"] = "12.0"
 
 # 测试配置
 CONFIG = {
-    "model_path": "/home/saimo/work/render/yiqi_1212/iteration_180000.pth",
+    "model_path": "/home/saimo/work/render/049_multimodal.pth",
     "warmup_frames": 10,
     "benchmark_frames": 100,
     "save_first_frame": True,
     "camera_count": 1,
-    "resolution": (3200, 1350),
+    "resolution": (1920, 1280),
 }
 
-# 标准相机参数
 STANDARD_EXTRINSICS = [
-    [0.003891, 0.025977, 0.999655, 2.039401],
-    [-0.999948, 0.009529, 0.003644, 0.006142],
-    [-0.009431, -0.999617, 0.026013, 1.486288],
+    [-4.588266398430291063e-03, -3.413667297520365119e-03, 9.999836472098125872e-01, 1.544154267170511075e+00],
+    [-9.999632354307952387e-01, -7.228375769820964344e-03, -4.612848415714690224e-03, -2.315740942895095494e-02],
+    [7.244004295493749329e-03, -9.999680482191979358e-01, -3.380376081852865672e-03, 2.115612062706179408e+00],
     [0.0, 0.0, 0.0, 1.0],
 ]
 
-STANDARD_INTRINSICS = [[6099.5736, 0.0, 1605.47122], [0.0, 6100.29879, 927.925004], [0.0, 0.0, 1.0]]
+STANDARD_INTRINSICS = [
+    [2.084604312956008926e+03, 0.00000000e00, 9.334067577078354816e+02],
+    [0.00000000e00, 2.084604312956008926e+03, 6.650223418347507049e+02],
+    [0.00000000e00, 0.00000000e00, 1.00000000e00],
+]
+
+# # 标准相机参数
+# STANDARD_EXTRINSICS = [
+#     [0.003891, 0.025977, 0.999655, 2.039401],
+#     [-0.999948, 0.009529, 0.003644, 0.006142],
+#     [-0.009431, -0.999617, 0.026013, 1.486288],
+#     [0.0, 0.0, 0.0, 1.0],
+# ]
+
+# STANDARD_INTRINSICS = [[6099.5736, 0.0, 1605.47122], [0.0, 6100.29879, 927.925004], [0.0, 0.0, 1.0]]
 
 
 def create_test_cameras(count: int, width: int, height: int) -> list[Camera]:
@@ -59,16 +72,16 @@ def create_test_scenario() -> tuple[InitParams, FrameParams]:
     # 创建测试车辆
     # 43, 15
     vehicles = [
-        Vehicle([-1070.146, 3554.094, 0.907585], 2.271827, "obj_006"),
+        # Vehicle([-1070.146, 3554.094, 0.907585], 2.271827, "obj_006"),
     ]
 
     # 创建帧参数
     frame_params = FrameParams(
-        # ego_trajectory=[8212.159, 4684.092, 48.765], ego_yaw=0, env_vehicles=vehicles, timestamp=20250912
-        ego_trajectory=[-1062.67011, 3550.622584, 0.013875],
-        ego_yaw=2.26268,
-        env_vehicles=vehicles,
-        timestamp=20250912,
+        ego_trajectory=[8212.159, 4684.092, 48.765], ego_yaw=0, env_vehicles=vehicles, timestamp=20250912,
+        # ego_trajectory=[-1062.67011, 3550.622584, 0.013875],
+        # ego_yaw=2.26268,
+        # env_vehicles=vehicles,
+        # timestamp=20250912,
     )
 
     return init_params, frame_params

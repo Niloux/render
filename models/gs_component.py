@@ -78,8 +78,9 @@ class GaussianComponent:
         # 检查tensor维度
         if (
             self.xyz.shape[1] != 3
-            or self.feature_dc.shape[1:] != (1, 3)
-            or self.feature_rest.shape[1:] != (8, 3)
+            # TODO:
+            or self.feature_dc.shape[1:] != (1, 5)
+            or self.feature_rest.shape[1:] != (3, 5)
             or self.scaling.shape[1] != 3
             or self.rotation.shape[1] != 4
             or self.opacity.shape[1] != 1
