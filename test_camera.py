@@ -21,7 +21,7 @@ CONFIG = {
     "warmup_frames": 10,
     "benchmark_frames": 100,
     "save_first_frame": True,
-    "camera_count": 1,
+    "camera_count": 10,
     "resolution": (1920, 1280),
 }
 
