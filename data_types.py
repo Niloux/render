@@ -64,7 +64,7 @@ class InitResp:
 class Vehicle:
     trajectory: List[float]  # (x, y, z)
     yaw: float
-    type: Optional[str] = ""
+    type: str
 
 
 @dataclass
@@ -98,7 +98,9 @@ class GaussianData:
         )
 
     @classmethod
-    def from_components(cls, components: List["GaussianComponent"]) -> Optional["GaussianData"]:
+    def from_components(
+        cls, components: List["GaussianComponent"]
+    ) -> Optional["GaussianData"]:
         """从GaussianComponent列表创建GaussianData"""
         if not components:
             return None
@@ -137,4 +139,9 @@ class FrameResp:
                 "error_msg": null
             }
         """
-        return {"timestamp": self.timestamp, "images": self.images, "error_msg": self.error_msg, "lidars": self.lidars}
+        return {
+            "timestamp": self.timestamp,
+            "images": self.images,
+            "error_msg": self.error_msg,
+            "lidars": self.lidars,
+        }

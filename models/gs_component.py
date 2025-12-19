@@ -9,9 +9,6 @@ from config import SKY_CENTER, SKY_RADIUS
 
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
-SKY_CENTER = torch.tensor(SKY_CENTER, device=device)
-SKY_RADIUS = torch.tensor(SKY_RADIUS, device=device)
-
 
 @dataclass
 class GaussianComponent:
@@ -58,7 +55,14 @@ class GaussianComponent:
         n = self.num_points
 
         # 检查所有tensor的第一维是否一致
-        tensors = [self.xyz, self.feature_dc, self.feature_rest, self.scaling, self.rotation, self.opacity]
+        tensors = [
+            self.xyz,
+            self.feature_dc,
+            self.feature_rest,
+            self.scaling,
+            self.rotation,
+            self.opacity,
+        ]
 
         for tensor in tensors:
             if tensor.shape[0] != n:
@@ -98,7 +102,9 @@ class GaussianComponent:
 
     def __str__(self) -> str:
         """字符串表示。"""
-        semantic_info = f", semantic: {self.semantic.shape}" if self.semantic is not None else ""
+        semantic_info = (
+            f", semantic: {self.semantic.shape}" if self.semantic is not None else ""
+        )
         return (
             f"GaussianComponent(name='{self.name}', points={self.num_points}, "
             f"memory={self.memory_usage:.2f}MB{semantic_info})"
@@ -124,14 +130,25 @@ class GaussianComponent:
                 ratios = dists / (2 * SKY_RADIUS)
                 # 将条件张量扩展到匹配xyz的形状 (N, 3)
                 condition = (ratios < 1.0).unsqueeze(1)  # (N, 1) -> 广播到 (N, 3)
-                xyz = torch.where(condition, SKY_CENTER + (self.xyz - SKY_CENTER) / ratios.unsqueeze(1), self.xyz)
+                xyz = torch.where(
+                    condition,
+                    SKY_CENTER + (self.xyz - SKY_CENTER) / ratios.unsqueeze(1),
+                    self.xyz,
+                )
                 return xyz
             else:
+                if not heading:
+                    raise ValueError("object必须提供heading")
+                if not position:
+                    raise ValueError("object必须提供position")
                 # 计算旋转矩阵，无需缓存
                 device = self.xyz.device
                 cos_h = torch.cos(torch.tensor(heading, device=device))
                 sin_h = torch.sin(torch.tensor(heading, device=device))
-                rot_matrix = torch.tensor([[cos_h, -sin_h, 0.0], [sin_h, cos_h, 0.0], [0.0, 0.0, 1.0]], device=device)
+                rot_matrix = torch.tensor(
+                    [[cos_h, -sin_h, 0.0], [sin_h, cos_h, 0.0], [0.0, 0.0, 1.0]],
+                    device=device,
+                )
 
                 # 向量化矩阵乘法：[N, 3] @ [3, 3] -> [N, 3]
                 means_rotated = torch.matmul(self.xyz, rot_matrix.T)
@@ -151,20 +168,34 @@ class GaussianComponent:
             if self.name in ["background", "sky"]:
                 return torch.nn.functional.normalize(self.rotation)
             else:
+                if not heading:
+                    raise ValueError("object必须提供heading")
                 # 直接计算四元数，无需缓存
                 device = self.rotation.device
                 half_angle = heading * 0.5
                 cos_half = torch.cos(torch.tensor(half_angle, device=device))
                 sin_half = torch.sin(torch.tensor(half_angle, device=device))
-                quat_heading = torch.tensor([cos_half, 0.0, 0.0, sin_half], device=device)  # [w, x, y, z]
+                quat_heading = torch.tensor(
+                    [cos_half, 0.0, 0.0, sin_half], device=device
+                )  # [w, x, y, z]
 
                 # 向量化四元数乘法：quat_heading * self.rotation
                 # q1 * q2 = [w1*w2 - x1*x2 - y1*y2 - z1*z2,
                 #            w1*x2 + x1*w2 + y1*z2 - z1*y2,
                 #            w1*y2 - x1*z2 + y1*w2 + z1*x2,
                 #            w1*z2 + x1*y2 - y1*x2 + z1*w2]
-                w1, x1, y1, z1 = quat_heading[0], quat_heading[1], quat_heading[2], quat_heading[3]
-                w2, x2, y2, z2 = self.rotation[:, 0], self.rotation[:, 1], self.rotation[:, 2], self.rotation[:, 3]
+                w1, x1, y1, z1 = (
+                    quat_heading[0],
+                    quat_heading[1],
+                    quat_heading[2],
+                    quat_heading[3],
+                )
+                w2, x2, y2, z2 = (
+                    self.rotation[:, 0],
+                    self.rotation[:, 1],
+                    self.rotation[:, 2],
+                    self.rotation[:, 3],
+                )
 
                 quats_world = torch.stack(
                     [

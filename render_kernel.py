@@ -32,11 +32,15 @@ def extract_camera_centers(viewmats: torch.Tensor):
     R = viewmats[:, :3, :3]  # 旋转矩阵 [C, 3, 3]
     t = viewmats[:, :3, 3]  # 平移向量 [C, 3]
     # camera_center = -R^T * t
-    camera_centers = -torch.bmm(R.transpose(-2, -1), t.unsqueeze(-1)).squeeze(-1)  # [C, 3]
+    camera_centers = -torch.bmm(R.transpose(-2, -1), t.unsqueeze(-1)).squeeze(
+        -1
+    )  # [C, 3]
     return camera_centers
 
 
-def render_gaussian_splatting(means, quats, scales, opacities, colors, viewmats, Ks, img_width, img_height):
+def render_gaussian_splatting(
+    means, quats, scales, opacities, colors, viewmats, Ks, img_width, img_height
+):
     """
     执行高斯点云渲染的核心函数
 
@@ -82,9 +86,18 @@ def render_gaussian_splatting(means, quats, scales, opacities, colors, viewmats,
     tile_width = math.ceil(img_width / float(tile_size))
     tile_height = math.ceil(img_height / float(tile_size))
     tiles_per_gauss, isect_ids, flatten_ids = isect_tiles(
-        means2d, radii, depths, tile_size, tile_width, tile_height, packed=False, n_images=viewmats.shape[0]
+        means2d,
+        radii,
+        depths,
+        tile_size,
+        tile_width,
+        tile_height,
+        packed=False,
+        n_images=viewmats.shape[0],
     )
-    isect_offsets = isect_offset_encode(isect_ids, viewmats.shape[0], tile_width, tile_height)
+    isect_offsets = isect_offset_encode(
+        isect_ids, viewmats.shape[0], tile_width, tile_height
+    )
 
     # 球谐函数处理
     camera_centers = extract_camera_centers(viewmats)  # [C, 3]
@@ -115,7 +128,9 @@ def render_gaussian_splatting(means, quats, scales, opacities, colors, viewmats,
     return render_colors, render_alphas
 
 
-def render_native(means, quats, scales, opacities, colors, viewmats, Ks, img_width, img_height):
+def render_native(
+    means, quats, scales, opacities, colors, viewmats, Ks, img_width, img_height
+):
     """原生的渲染方法，使用rasterization函数的内置球谐函数处理"""
     # gsplat库期望opacities形状为[N,]，而不是[N,1]
     if opacities.dim() == 2 and opacities.shape[1] == 1:
@@ -152,11 +167,17 @@ def render_native(means, quats, scales, opacities, colors, viewmats, Ks, img_wid
     return render_colors, render_alphas
 
 
-def render(means, quats, scales, opacities, colors, viewmats, Ks, img_width, img_height):
+def render(
+    means, quats, scales, opacities, colors, viewmats, Ks, img_width, img_height
+):
     if NATIVE:
-        return render_native(means, quats, scales, opacities, colors, viewmats, Ks, img_width, img_height)
+        return render_native(
+            means, quats, scales, opacities, colors, viewmats, Ks, img_width, img_height
+        )
     else:
-        return render_gaussian_splatting(means, quats, scales, opacities, colors, viewmats, Ks, img_width, img_height)
+        return render_gaussian_splatting(
+            means, quats, scales, opacities, colors, viewmats, Ks, img_width, img_height
+        )
 
 
 def generate_point_cloud(
@@ -189,8 +210,12 @@ def generate_point_cloud(
 
     _pc_xyz = torch.stack(
         [
-            torch.cos(azim_elev[..., 1].deg2rad()) * torch.cos(azim_elev[..., 0].deg2rad()) * pc_range,
-            torch.cos(azim_elev[..., 1].deg2rad()) * torch.sin(azim_elev[..., 0].deg2rad()) * pc_range,
+            torch.cos(azim_elev[..., 1].deg2rad())
+            * torch.cos(azim_elev[..., 0].deg2rad())
+            * pc_range,
+            torch.cos(azim_elev[..., 1].deg2rad())
+            * torch.sin(azim_elev[..., 0].deg2rad())
+            * pc_range,
             torch.sin(azim_elev[..., 1].deg2rad()) * pc_range,
         ],
         dim=-1,
@@ -218,7 +243,11 @@ def build_raster_pts(
     """根据点云与瓦片设置生成 raster_pts 与边界/偏移。"""
     elevation_boundaries = torch.cat([
         elevations[0:1] - 1.0,
-        (elevations[tile_height::tile_height] + elevations[tile_height - 1 : -1 : tile_height]) / 2,
+        (
+            elevations[tile_height::tile_height]
+            + elevations[tile_height - 1 : -1 : tile_height]
+        )
+        / 2,
         elevations[-1:] + 1.0,
     ])
 

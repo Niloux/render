@@ -125,7 +125,7 @@ def pano_to_lidar_with_intensities(raster_pts, out):
     # 使用预测的深度生成点云
     pred_depth = out["depth"].flatten()  # [H*W]
     pred_intensity = out["intensity"].flatten()  # [H*W]
-    pred_ray_drop = out["ray_drop_prob"].flatten()  # [H*W]
+    _pred_ray_drop = out["ray_drop_prob"].flatten()  # [H*W]
 
     # 将深度图转换为点云坐标
     pred_points = directions * pred_depth.unsqueeze(-1)  # [H*W, 3]

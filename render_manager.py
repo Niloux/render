@@ -4,29 +4,39 @@ import torch
 from gsplat.rendering import lidar_rasterization
 
 from config import MAP_CENTER
-from data_types import Camera, FrameParams, FrameResp, GaussianData, InitParams, InitResp, Lidar, Vehicle
+from data_types import (
+    Camera,
+    FrameParams,
+    FrameResp,
+    GaussianData,
+    InitParams,
+    InitResp,
+    Lidar,
+    Vehicle,
+)
 from gsplat import spherical_harmonics
 from models import GaussianComponent, GSModel
-from render_kernel import build_raster_pts, extract_camera_centers, generate_point_cloud, render
+from render_kernel import (
+    build_raster_pts,
+    extract_camera_centers,
+    generate_point_cloud,
+    render,
+)
 from util import calculate_viewmats
 
 
 class RenderManager:
     def __init__(self, model: str = "model.path") -> None:
-        # 获取当前进程的rank并分配对应的GPU设备
-        if torch.distributed.is_initialized():
-            rank = torch.distributed.get_rank()
-            self.device = torch.device(f"cuda:{rank}")
-        else:
-            # 如果不是分布式环境，则使用可用的第一个GPU或CPU
-            self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+        self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
         self.model = GSModel.load_from_pth(model).to_device(self.device)
         self.background: GaussianComponent = self.model.get_component("background")
         self.sky: GaussianComponent = self.model.get_component("sky")
         self.actors: List[GaussianComponent] = self.model.get_components_by_type("obj")
         self.map_center = torch.tensor(MAP_CENTER, device=self.device)
         # 预构建环境车name到点云的映射
-        self.actor_map: Dict[str, GaussianComponent] = {actor.name: actor for actor in self.actors}
+        self.actor_map: Dict[str, GaussianComponent] = {
+            actor.name: actor for actor in self.actors
+        }
         self._setup_render_buffers()
         self.lidars: Dict[str, Lidar] = {}
         self.lidar_data: Dict[str, Dict] = {}
@@ -42,6 +52,8 @@ class RenderManager:
         # 计算静态点云数据
         static_components = [self.background, self.sky]
         self.static_data = GaussianData.from_components(static_components)
+        if not self.static_data:
+            raise ValueError("静态点云组件不能为空")
         self.static_points = self.static_data.means.shape[0]
 
         # 预计算最大可能的动态点数（假设所有车辆类型同时出现）
@@ -53,19 +65,31 @@ class RenderManager:
         device = self.device
 
         self.render_buffer = {
-            "means": torch.empty((total_max_points, 3), device=device, dtype=torch.float32),
-            "quats": torch.empty((total_max_points, 4), device=device, dtype=torch.float32),
-            "scales": torch.empty((total_max_points, 3), device=device, dtype=torch.float32),
-            "opacities": torch.empty((total_max_points, 1), device=device, dtype=torch.float32),
+            "means": torch.empty(
+                (total_max_points, 3), device=device, dtype=torch.float32
+            ),
+            "quats": torch.empty(
+                (total_max_points, 4), device=device, dtype=torch.float32
+            ),
+            "scales": torch.empty(
+                (total_max_points, 3), device=device, dtype=torch.float32
+            ),
+            "opacities": torch.empty(
+                (total_max_points, 1), device=device, dtype=torch.float32
+            ),
             # TODO:这里的颜色维度也需要根据模型来进行调整
-            "colors": torch.empty((total_max_points, 4, 5), device=device, dtype=torch.float32),
+            "colors": torch.empty(
+                (total_max_points, 4, 5), device=device, dtype=torch.float32
+            ),
         }
 
         # 一次性拷贝静态数据到buffer前部，永不改变
         self.render_buffer["means"][: self.static_points] = self.static_data.means
         self.render_buffer["quats"][: self.static_points] = self.static_data.quats
         self.render_buffer["scales"][: self.static_points] = self.static_data.scales
-        self.render_buffer["opacities"][: self.static_points] = self.static_data.opacities
+        self.render_buffer["opacities"][: self.static_points] = (
+            self.static_data.opacities
+        )
         self.render_buffer["colors"][: self.static_points] = self.static_data.colors
 
     def _update_dynamic_buffer(self, vehicles: List[Vehicle]) -> int:
@@ -80,7 +104,9 @@ class RenderManager:
         # 快速失败：批量验证所有车辆类型
         unknown_types = [v.type for v in vehicles if v.type not in self.actor_map]
         if unknown_types:
-            raise ValueError(f"Unknown vehicle types: {unknown_types}. Available: {list(self.actor_map.keys())}")
+            raise ValueError(
+                f"Unknown vehicle types: {unknown_types}. Available: {list(self.actor_map.keys())}"  # noqa: E501
+            )
 
         # 直接更新buffer的动态部分，从static_points开始
         start_idx = self.static_points
@@ -89,7 +115,10 @@ class RenderManager:
         for v in vehicles:
             # 预先转换位置数据，避免重复计算
             heading = v.yaw
-            position = torch.tensor(v.trajectory, device=device, dtype=torch.float32) - self.map_center
+            position = (
+                torch.tensor(v.trajectory, device=device, dtype=torch.float32)
+                - self.map_center
+            )
 
             # 获取对应组件并计算变换
             component = self.actor_map[v.type]
@@ -97,10 +126,16 @@ class RenderManager:
             end_idx = start_idx + num_points
 
             # 直接写入预分配buffer的对应切片，零拷贝
-            self.render_buffer["means"][start_idx:end_idx] = component.get_xyz(heading, position)
-            self.render_buffer["quats"][start_idx:end_idx] = component.get_quats(heading)
+            self.render_buffer["means"][start_idx:end_idx] = component.get_xyz(
+                heading, position
+            )
+            self.render_buffer["quats"][start_idx:end_idx] = component.get_quats(
+                heading
+            )
             self.render_buffer["scales"][start_idx:end_idx] = component.get_scales()
-            self.render_buffer["opacities"][start_idx:end_idx] = component.get_opacities()
+            self.render_buffer["opacities"][start_idx:end_idx] = (
+                component.get_opacities()
+            )
             self.render_buffer["colors"][start_idx:end_idx] = component.get_colors()
 
             start_idx = end_idx
@@ -188,7 +223,7 @@ class RenderManager:
                 }
         return resp
 
-    def render_frame(self, params: FrameParams) -> FrameResp:
+    def render_frame(self, params: FrameParams) -> FrameResp:  # noqa: C901
         """渲染接口，每帧调用"""
         # 输入验证
         if not params.ego_trajectory or len(params.ego_trajectory) != 3:
@@ -196,7 +231,10 @@ class RenderManager:
 
         # 转换ego
         ego_heading = params.ego_yaw
-        ego_position = torch.tensor(params.ego_trajectory, device=self.device, dtype=torch.float32) - self.map_center
+        ego_position = (
+            torch.tensor(params.ego_trajectory, device=self.device, dtype=torch.float32)
+            - self.map_center
+        )
 
         # 预分配buffer的动态部分
         dynamic_points = self._update_dynamic_buffer(params.env_vehicles)
@@ -219,7 +257,9 @@ class RenderManager:
                 width = cam_data["width"]
                 height = cam_data["height"]
 
-                viewmats = calculate_viewmats(extrinsics_list, ego_heading, ego_position)
+                viewmats = calculate_viewmats(
+                    extrinsics_list, ego_heading, ego_position
+                )
 
                 # 渲染并收集结果 - 直接传递预分配buffer参数
                 batch_colors, batch_alphas = render(
@@ -241,50 +281,75 @@ class RenderManager:
         lidars = {}
         if self.render_lidar:
             for lidar_id, lidar_cfg in self.lidar_data.items():
-                viewmats = calculate_viewmats([lidar_cfg["extrinsics"]], ego_heading, ego_position)
-                lidar_features = self._compute_lidar_features_from_colors(render_colors, render_means, viewmats)
+                viewmats = calculate_viewmats(
+                    [lidar_cfg["extrinsics"]], ego_heading, ego_position
+                )
+                lidar_features = self._compute_lidar_features_from_colors(
+                    render_colors, render_means, viewmats
+                )
                 raster_pts = lidar_cfg["raster_pts"]
-                rendered_feat, rendered_alpha, alpha_sum_until_points, meta_info = lidar_rasterization(
-                    means=render_means,
-                    quats=render_quats,
-                    scales=render_scales,
-                    opacities=render_opacities.squeeze(-1),
-                    lidar_features=lidar_features,
-                    velocities=None,
-                    viewmats=viewmats,
-                    raster_pts=raster_pts[..., :4],
-                    tile_elevation_boundaries=lidar_cfg["elevation_boundaries"],
-                    min_azimuth=lidar_cfg["min_azimuth"],
-                    max_azimuth=lidar_cfg["max_azimuth"],
-                    min_elevation=lidar_cfg["min_elevation"],
-                    max_elevation=lidar_cfg["max_elevation"],
-                    n_elevation_channels=lidar_cfg["elevations"].shape[0],
-                    azimuth_resolution=lidar_cfg["azimuth_resolution"],
-                    tile_width=lidar_cfg["tile_width"],
-                    tile_height=lidar_cfg["tile_height"],
-                    near_plane=self.lidars[lidar_id].near_plane if lidar_id in self.lidars else 0.01,
-                    far_plane=self.lidars[lidar_id].far_plane if lidar_id in self.lidars else 1e10,
-                    radius_clip=0.0,
-                    sparse_grad=False,
-                    absgrad=True,
-                    channel_chunk=128,
-                    compute_alpha_sum_until_points=False,
-                    compute_alpha_sum_until_points_threshold=0.8,
+                rendered_feat, rendered_alpha, alpha_sum_until_points, meta_info = (
+                    lidar_rasterization(
+                        means=render_means,
+                        quats=render_quats,
+                        scales=render_scales,
+                        opacities=render_opacities.squeeze(-1),
+                        lidar_features=lidar_features,
+                        velocities=None,
+                        viewmats=viewmats,
+                        raster_pts=raster_pts[..., :4],
+                        tile_elevation_boundaries=lidar_cfg["elevation_boundaries"],
+                        min_azimuth=lidar_cfg["min_azimuth"],
+                        max_azimuth=lidar_cfg["max_azimuth"],
+                        min_elevation=lidar_cfg["min_elevation"],
+                        max_elevation=lidar_cfg["max_elevation"],
+                        n_elevation_channels=lidar_cfg["elevations"].shape[0],
+                        azimuth_resolution=lidar_cfg["azimuth_resolution"],
+                        tile_width=lidar_cfg["tile_width"],
+                        tile_height=lidar_cfg["tile_height"],
+                        near_plane=self.lidars[lidar_id].near_plane
+                        if lidar_id in self.lidars
+                        else 0.01,
+                        far_plane=self.lidars[lidar_id].far_plane
+                        if lidar_id in self.lidars
+                        else 1e10,
+                        radius_clip=0.0,
+                        sparse_grad=False,
+                        absgrad=True,
+                        channel_chunk=128,
+                        compute_alpha_sum_until_points=False,
+                        compute_alpha_sum_until_points_threshold=0.8,
+                    )
                 )
                 raster_pts_did_return = (raster_pts[..., 2] <= 1000).squeeze(0)
-                raster_pts_valid_depth_and_did_return = raster_pts_did_return & (raster_pts[..., 2] > 0).squeeze(0)
+                raster_pts_valid_depth_and_did_return = raster_pts_did_return & (
+                    raster_pts[..., 2] > 0
+                ).squeeze(0)
                 gt_valid = (raster_pts[..., 2] > 0).squeeze(0)
 
                 lidar_intensity = rendered_feat[..., 0].squeeze(0)
                 lidar_ray_drop_logits = rendered_feat[..., 1].squeeze(0)
                 lidar_depth_render = rendered_feat[..., -1].squeeze(0)
 
-                if raster_pts_valid_depth_and_did_return.shape != lidar_depth_render.shape:
-                    if raster_pts_valid_depth_and_did_return.transpose(0, 1).shape == lidar_depth_render.shape:
-                        raster_pts_valid_depth_and_did_return = raster_pts_valid_depth_and_did_return.transpose(0, 1)
-                    elif raster_pts_valid_depth_and_did_return.numel() == lidar_depth_render.numel():
-                        raster_pts_valid_depth_and_did_return = raster_pts_valid_depth_and_did_return.reshape(
-                            lidar_depth_render.shape
+                if (
+                    raster_pts_valid_depth_and_did_return.shape
+                    != lidar_depth_render.shape
+                ):
+                    if (
+                        raster_pts_valid_depth_and_did_return.transpose(0, 1).shape
+                        == lidar_depth_render.shape
+                    ):
+                        raster_pts_valid_depth_and_did_return = (
+                            raster_pts_valid_depth_and_did_return.transpose(0, 1)
+                        )
+                    elif (
+                        raster_pts_valid_depth_and_did_return.numel()
+                        == lidar_depth_render.numel()
+                    ):
+                        raster_pts_valid_depth_and_did_return = (
+                            raster_pts_valid_depth_and_did_return.reshape(
+                                lidar_depth_render.shape
+                            )
                         )
 
                 if gt_valid.shape != lidar_depth_render.shape:
@@ -293,12 +358,17 @@ class RenderManager:
                     elif gt_valid.numel() == lidar_depth_render.numel():
                         gt_valid = gt_valid.reshape(lidar_depth_render.shape)
 
-                valid_mask = raster_pts_valid_depth_and_did_return.to(lidar_depth_render.dtype)
+                valid_mask = raster_pts_valid_depth_and_did_return.to(
+                    lidar_depth_render.dtype
+                )
                 lidar_intensity = lidar_intensity * valid_mask
                 lidar_depth_render = lidar_depth_render * valid_mask
 
                 gt_valid_mask = gt_valid.to(lidar_ray_drop_logits.dtype)
-                lidar_ray_drop_logits = lidar_ray_drop_logits * gt_valid_mask - (1.0 - gt_valid_mask) * 10000.0
+                lidar_ray_drop_logits = (
+                    lidar_ray_drop_logits * gt_valid_mask
+                    - (1.0 - gt_valid_mask) * 10000.0
+                )
 
                 # 深度滤波
                 if True:
@@ -331,7 +401,9 @@ class RenderManager:
                 pred, gt = pano_to_lidar_with_intensities(raster_pts, out)
                 lidars[lidar_id] = pred
 
-        return FrameResp(timestamp=params.timestamp, images=images, error_msg=None, lidars=lidars)
+        return FrameResp(
+            timestamp=params.timestamp, images=images, error_msg=None, lidars=lidars
+        )
 
     def _compute_lidar_features_from_colors(
         self,
@@ -346,7 +418,7 @@ class RenderManager:
         - 为了与球谐评估接口保持一致，将雷达的2通道系数在最后一维填充一个0，形成3通道，
           使用同样的degree=1进行方向相关的评估，然后只保留前2个通道作为雷达特征。
         - 如果`colors`不含雷达通道（例如`D==3`），则返回零特征以保持向后兼容。
-        """
+        """  # noqa: E501
         C = viewmats.shape[0]
         N = means.shape[0]
         device = self.device

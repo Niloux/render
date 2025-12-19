@@ -43,7 +43,14 @@ class GSModel:
 
             if isinstance(data, dict) and len(data) > 0:
                 # 检查是否包含必要的键
-                required_keys = ["xyz", "feature_dc", "feature_rest", "scaling", "rotation", "opacity"]
+                required_keys = [
+                    "xyz",
+                    "feature_dc",
+                    "feature_rest",
+                    "scaling",
+                    "rotation",
+                    "opacity",
+                ]
                 if all(key in data for key in required_keys):
                     component = GaussianComponent(
                         name=name,
@@ -72,7 +79,7 @@ class GSModel:
         checkpoint = {"iter": self.iteration}
 
         for name, component in self.components.items():
-            checkpoint[name] = {
+            data = {
                 "xyz": component.xyz,
                 "feature_dc": component.feature_dc,
                 "feature_rest": component.feature_rest,
@@ -82,7 +89,8 @@ class GSModel:
             }
 
             if component.semantic is not None:
-                checkpoint[name]["semantic"] = component.semantic
+                data["semantic"] = component.semantic
+            checkpoint[name] = data
 
         torch.save(checkpoint, pth_path)
 
@@ -128,7 +136,11 @@ class GSModel:
         Returns:
             匹配的组件列表
         """
-        return [comp for name, comp in self.components.items() if name.startswith(component_type)]
+        return [
+            comp
+            for name, comp in self.components.items()
+            if name.startswith(component_type)
+        ]
 
     @property
     def total_points(self) -> int:
