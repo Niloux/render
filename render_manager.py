@@ -243,6 +243,7 @@ class RenderManager:
             for lidar_id, lidar_cfg in self.lidar_data.items():
                 viewmats = calculate_viewmats([lidar_cfg["extrinsics"]], ego_heading, ego_position)
                 lidar_features = self._compute_lidar_features_from_colors(render_colors, render_means, viewmats)
+                raster_pts = lidar_cfg["raster_pts"]
                 rendered_feat, rendered_alpha, alpha_sum_until_points, meta_info = lidar_rasterization(
                     means=render_means,
                     quats=render_quats,
@@ -251,7 +252,7 @@ class RenderManager:
                     lidar_features=lidar_features,
                     velocities=None,
                     viewmats=viewmats,
-                    raster_pts=lidar_cfg["raster_pts"][..., :4],
+                    raster_pts=raster_pts[..., :4],
                     tile_elevation_boundaries=lidar_cfg["elevation_boundaries"],
                     min_azimuth=lidar_cfg["min_azimuth"],
                     max_azimuth=lidar_cfg["max_azimuth"],
@@ -263,8 +264,73 @@ class RenderManager:
                     tile_height=lidar_cfg["tile_height"],
                     near_plane=self.lidars[lidar_id].near_plane if lidar_id in self.lidars else 0.01,
                     far_plane=self.lidars[lidar_id].far_plane if lidar_id in self.lidars else 1e10,
+                    radius_clip=0.0,
+                    sparse_grad=False,
+                    absgrad=True,
+                    channel_chunk=128,
+                    compute_alpha_sum_until_points=False,
+                    compute_alpha_sum_until_points_threshold=0.8,
                 )
-                lidars[lidar_id] = rendered_feat
+                raster_pts_did_return = (raster_pts[..., 2] <= 1000).squeeze(0)
+                raster_pts_valid_depth_and_did_return = raster_pts_did_return & (raster_pts[..., 2] > 0).squeeze(0)
+                gt_valid = (raster_pts[..., 2] > 0).squeeze(0)
+
+                lidar_intensity = rendered_feat[..., 0].squeeze(0)
+                lidar_ray_drop_logits = rendered_feat[..., 1].squeeze(0)
+                lidar_depth_render = rendered_feat[..., -1].squeeze(0)
+
+                if raster_pts_valid_depth_and_did_return.shape != lidar_depth_render.shape:
+                    if raster_pts_valid_depth_and_did_return.transpose(0, 1).shape == lidar_depth_render.shape:
+                        raster_pts_valid_depth_and_did_return = raster_pts_valid_depth_and_did_return.transpose(0, 1)
+                    elif raster_pts_valid_depth_and_did_return.numel() == lidar_depth_render.numel():
+                        raster_pts_valid_depth_and_did_return = raster_pts_valid_depth_and_did_return.reshape(
+                            lidar_depth_render.shape
+                        )
+
+                if gt_valid.shape != lidar_depth_render.shape:
+                    if gt_valid.transpose(0, 1).shape == lidar_depth_render.shape:
+                        gt_valid = gt_valid.transpose(0, 1)
+                    elif gt_valid.numel() == lidar_depth_render.numel():
+                        gt_valid = gt_valid.reshape(lidar_depth_render.shape)
+
+                valid_mask = raster_pts_valid_depth_and_did_return.to(lidar_depth_render.dtype)
+                lidar_intensity = lidar_intensity * valid_mask
+                lidar_depth_render = lidar_depth_render * valid_mask
+
+                gt_valid_mask = gt_valid.to(lidar_ray_drop_logits.dtype)
+                lidar_ray_drop_logits = lidar_ray_drop_logits * gt_valid_mask - (1.0 - gt_valid_mask) * 10000.0
+
+                # 深度滤波
+                if True:
+                    # 使用相邻列深度差异进行滤波
+                    depth_modified = lidar_depth_render.clone()
+                    depth_sample = depth_modified  # 现在形状是 [H, W]
+
+                    # 计算相邻列的深度差异 (列方向: width维度，对应维度1)
+                    depth_diff = depth_sample[:, 1:] - depth_sample[:, :-1]
+                    depth_diff = torch.abs(depth_diff)
+
+                    # 深度差异大于0.5的位置设为0,否则为1
+                    depth_diff_mask = torch.where(depth_diff > 0.5, 0, 1).float()
+
+                    # 创建完整mask,第一列保持为1
+                    full_mask = torch.ones_like(depth_sample)  # [H, W]
+                    full_mask[:, 1:] = depth_diff_mask  # 填充除第一列外的部分
+
+                    # 应用mask
+                    lidar_depth_render = lidar_depth_render * full_mask
+                    lidar_intensity = lidar_intensity * full_mask
+
+                out = {
+                    "depth": lidar_depth_render,
+                    "intensity": lidar_intensity,
+                    "ray_drop_prob": lidar_ray_drop_logits,
+                }
+                from lidar_pcd import pano_to_lidar_with_intensities
+
+                pred, gt = pano_to_lidar_with_intensities(raster_pts, out)
+                lidars[lidar_id] = pred
+                print(f"{pred.shape=}")
 
         return FrameResp(timestamp=params.timestamp, images=images, error_msg=None, lidars=lidars)
 
