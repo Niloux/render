@@ -137,9 +137,9 @@ class GaussianComponent:
                 )
                 return xyz
             else:
-                if not heading:
+                if heading is None:
                     raise ValueError("object必须提供heading")
-                if not position:
+                if position is None:
                     raise ValueError("object必须提供position")
                 # 计算旋转矩阵，无需缓存
                 device = self.xyz.device
@@ -168,7 +168,7 @@ class GaussianComponent:
             if self.name in ["background", "sky"]:
                 return torch.nn.functional.normalize(self.rotation)
             else:
-                if not heading:
+                if heading is None:
                     raise ValueError("object必须提供heading")
                 # 直接计算四元数，无需缓存
                 device = self.rotation.device
