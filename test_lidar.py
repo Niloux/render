@@ -20,7 +20,7 @@ CONFIG = {
     "warmup_frames": 1,
     "benchmark_frames": 100,
     "save_first_frame": True,
-    "camera_count": 10,
+    "camera_count": 1,
     "resolution": (1920, 1280),
 }
 
@@ -58,12 +58,14 @@ def create_test_lidars(count: int) -> list[Lidar]:
         Lidar(
             f"lidar{i + 1}",
             STANDARD_EXTRINSICS,
-            azimuth_resolution=0.2,
+            azimuth_resolution=0.140625,
             min_azimuth=-180.0,
             max_azimuth=180.0,
-            n_elevation_channels=32,
-            min_elevation=-30.0,
-            max_elevation=30.0,
+            n_elevation_channels=64,
+            min_elevation=-17.55,
+            max_elevation=2.5,
+            tile_width=32,
+            tile_height=8,
         )
         for i in range(count)
     ]
