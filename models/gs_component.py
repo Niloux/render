@@ -7,12 +7,7 @@ import torch
 
 from config import SKY_CENTER, SKY_RADIUS
 
-if torch.distributed.is_initialized():
-    rank = torch.distributed.get_rank()
-    device = torch.device(f"cuda:{rank}")
-else:
-    # 如果不是分布式环境，则使用可用的第一个GPU或CPU
-    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
 SKY_CENTER = torch.tensor(SKY_CENTER, device=device)
 SKY_RADIUS = torch.tensor(SKY_RADIUS, device=device)
@@ -44,16 +39,14 @@ class GaussianComponent:
     @property
     def memory_usage(self) -> float:
         """获取内存使用量（MB）。"""
-        total_bytes = sum(
-            [
-                self.xyz.numel() * self.xyz.element_size(),
-                self.feature_dc.numel() * self.feature_dc.element_size(),
-                self.feature_rest.numel() * self.feature_rest.element_size(),
-                self.scaling.numel() * self.scaling.element_size(),
-                self.rotation.numel() * self.rotation.element_size(),
-                self.opacity.numel() * self.opacity.element_size(),
-            ]
-        )
+        total_bytes = sum([
+            self.xyz.numel() * self.xyz.element_size(),
+            self.feature_dc.numel() * self.feature_dc.element_size(),
+            self.feature_rest.numel() * self.feature_rest.element_size(),
+            self.scaling.numel() * self.scaling.element_size(),
+            self.rotation.numel() * self.rotation.element_size(),
+            self.opacity.numel() * self.opacity.element_size(),
+        ])
 
         if self.semantic is not None:
             total_bytes += self.semantic.numel() * self.semantic.element_size()
