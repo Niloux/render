@@ -1,7 +1,7 @@
 import torch
 
 
-def load_and_inspect_pth(pth_path):
+def load_and_inspect_pth(pth_path):  # noqa: C901
     """
     加载pth文件并检查其数据结构
 

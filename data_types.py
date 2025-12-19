@@ -15,6 +15,7 @@ class Camera:
     width: int
     height: int
 
+
 @dataclass
 class Lidar:
     id: str
@@ -29,6 +30,7 @@ class Lidar:
     far_plane: float = 1e10
     tile_width: int = 64
     tile_height: int = 4
+
 
 @dataclass
 class InitParams:
@@ -136,4 +138,3 @@ class FrameResp:
             }
         """
         return {"timestamp": self.timestamp, "images": self.images, "error_msg": self.error_msg, "lidars": self.lidars}
-
