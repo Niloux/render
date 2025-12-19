@@ -326,11 +326,10 @@ class RenderManager:
                     "intensity": lidar_intensity,
                     "ray_drop_prob": lidar_ray_drop_logits,
                 }
-                from lidar_pcd import pano_to_lidar_with_intensities
+                from util import pano_to_lidar_with_intensities
 
                 pred, gt = pano_to_lidar_with_intensities(raster_pts, out)
                 lidars[lidar_id] = pred
-                print(f"{pred.shape=}")
 
         return FrameResp(timestamp=params.timestamp, images=images, error_msg=None, lidars=lidars)
 

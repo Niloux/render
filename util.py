@@ -84,3 +84,89 @@ def save_colors_as_png(image: Dict[str, torch.Tensor], output_dir="output"):
         img = Image.fromarray(rgb_colors)
         output_path = os.path.join(output_dir, f"{camera_id}.png")
         img.save(output_path)
+
+
+def pano_to_lidar_with_intensities(raster_pts, out):
+    """
+    将渲染输出转换为点云
+
+    参数:
+    raster_pts: [1, H, W, 5] - (azimuth, elev, depth, time, intensity)
+    out: 渲染输出字典，包含:
+        - "depth": [H, W] - 预测深度
+        - "intensity": [H, W] - 预测强度
+        - "ray_drop_prob": [H, W] - 射线丢弃概率
+
+    返回:
+    pred_point_cloud: [N, 4] - 预测点云 (x, y, z, intensity)
+    gt_point_cloud: [N, 4] - 真值点云 (x, y, z, intensity)
+    """
+    # 确保输入维度正确
+    if len(raster_pts.shape) == 4 and raster_pts.shape[0] == 1:
+        raster_pts = raster_pts.squeeze(0)  # [H, W, 5]
+
+    H, W = raster_pts.shape[:2]
+
+    # 计算方向向量
+    # 将角度从度转换为弧度并展平
+    azimuth_angles = torch.deg2rad(raster_pts[..., 0].flatten())  # [H*W]
+    elevation_angles = torch.deg2rad(raster_pts[..., 1].flatten())  # [H*W]
+
+    # 计算方向向量
+    directions = torch.stack(
+        [
+            torch.cos(elevation_angles) * torch.cos(azimuth_angles),  # x
+            torch.cos(elevation_angles) * torch.sin(azimuth_angles),  # y
+            torch.sin(elevation_angles),  # z
+        ],
+        dim=-1,
+    )  # [H*W, 3]
+
+    # 使用预测的深度生成点云
+    pred_depth = out["depth"].flatten()  # [H*W]
+    pred_intensity = out["intensity"].flatten()  # [H*W]
+    pred_ray_drop = out["ray_drop_prob"].flatten()  # [H*W]
+
+    # 将深度图转换为点云坐标
+    pred_points = directions * pred_depth.unsqueeze(-1)  # [H*W, 3]
+
+    # 将点云和强度合并
+    pred_point_cloud = torch.cat(
+        [
+            pred_points,  # 点云坐标 [H*W, 3]
+            pred_intensity.unsqueeze(-1),  # 强度值 [H*W, 1]
+        ],
+        dim=-1,
+    )  # [H*W, 4]
+
+    # 使用真值深度生成点云
+    gt_depth = raster_pts[..., 2].flatten()  # [H*W] - 真值深度
+    gt_intensity = raster_pts[..., 4].flatten()  # [H*W] - 真值强度
+
+    # 将真值深度图转换为点云坐标
+    gt_points = directions * gt_depth.unsqueeze(-1)  # [H*W, 3]
+
+    # 将真值点云和强度合并
+    gt_point_cloud = torch.cat(
+        [
+            gt_points,  # 真值点云坐标 [H*W, 3]
+            gt_intensity.unsqueeze(-1),  # 真值强度值 [H*W, 1]
+        ],
+        dim=-1,
+    )  # [H*W, 4]
+
+    # 创建有效点掩码（基于射线丢弃概率和深度有效性）
+    # ray_drop_mask = pred_ray_drop > 0.5  # 射线丢弃概率小于0.5的点被认为是有效的
+    depth_valid_mask = gt_depth > 0  # 深度大于0的点被认为是有效的
+    # print(gt_point_cloud.shape, pred_point_cloud.shape)
+
+    # 合并掩码
+    # valid_mask =  depth_valid_mask * ray_drop_mask
+    valid_mask = depth_valid_mask
+
+    # 应用掩码过滤无效点
+    pred_point_cloud = pred_point_cloud[valid_mask]  # [N_valid, 4]
+    gt_point_cloud = gt_point_cloud[valid_mask]  # [N_valid, 4]
+    # print(gt_point_cloud.shape, pred_point_cloud.shape)
+    # quit()
+    return pred_point_cloud, gt_point_cloud
