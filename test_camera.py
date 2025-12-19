@@ -18,7 +18,7 @@ os.environ["TORCH_CUDA_ARCH_LIST"] = "12.0"
 # 测试配置
 CONFIG = {
     "model_path": "/home/saimo/work/render/049_multimodal.pth",
-    "warmup_frames": 10,
+    "warmup_frames": 1,
     "benchmark_frames": 100,
     "save_first_frame": True,
     "camera_count": 10,
@@ -73,6 +73,7 @@ def create_test_scenario() -> tuple[InitParams, FrameParams]:
     # 43, 15
     vehicles = [
         # Vehicle([-1070.146, 3554.094, 0.907585], 2.271827, "obj_006"),
+        Vehicle([8235.21911375, 4684.84724959, 49.77610101], 0, "obj_015"),
     ]
 
     # 创建帧参数
