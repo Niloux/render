@@ -10,7 +10,6 @@ import torch
 
 from data_types import Camera, Lidar, Vehicle
 from render_manager import FrameParams, InitParams, RenderManager
-from util import save_colors_as_png
 
 # 环境配置
 os.environ["TORCH_CUDA_ARCH_LIST"] = "12.0"
@@ -117,16 +116,17 @@ def run_benchmark(render_manager: RenderManager, frame_params: FrameParams) -> d
 
     for i in range(CONFIG["benchmark_frames"]):
         t0 = time.perf_counter()  # 使用高精度计时器
-        frame_resp = render_manager.render_frame(frame_params)
+        _frame_resp = render_manager.render_frame(frame_params)
         t1 = time.perf_counter()
 
         render_time = t1 - t0
         render_times.append(render_time)
 
-        # 保存第一帧图像
-        if i == 0 and CONFIG["save_first_frame"]:
-            save_colors_as_png(frame_resp.lidars)
-            print("第一帧图像已保存")
+        # NOTE: lidar可视化是其他的方法，暂时没有集成
+        # # 保存第一帧图像
+        # if i == 0 and CONFIG["save_first_frame"]:
+        #     save_colors_as_png(frame_resp.lidars)
+        #     print("第一帧图像已保存")
 
         # 进度显示
         if (i + 1) % 20 == 0:
