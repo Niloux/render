@@ -32,7 +32,12 @@ class RenderManager:
         self.background: GaussianComponent = self.model.get_component("background")
         self.sky: GaussianComponent = self.model.get_component("sky")
         self.actors: List[GaussianComponent] = self.model.get_components_by_type("obj")
-        self.map_center = torch.tensor(MAP_CENTER, device=self.device)
+        # 修复 UserWarning: To copy construct from a tensor
+        if isinstance(MAP_CENTER, torch.Tensor):
+            self.map_center = MAP_CENTER.clone().detach().to(self.device)
+        else:
+            self.map_center = torch.tensor(MAP_CENTER, device=self.device)
+
         # 预构建环境车name到点云的映射
         self.actor_map: Dict[str, GaussianComponent] = {
             actor.name: actor for actor in self.actors
