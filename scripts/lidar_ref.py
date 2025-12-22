@@ -29,7 +29,9 @@ def setup_device() -> torch.device:
 
 def setup_gaussians(N: int, device: torch.device):
     """构建随机高斯场景（位置、四元数、尺度、不透明度、特征、速度）。"""
-    means = (torch.rand(N, 1, device=device) * 100 + 20) * F.normalize(torch.randn(N, 3, device=device), dim=-1)
+    means = (torch.rand(N, 1, device=device) * 100 + 20) * F.normalize(
+        torch.randn(N, 3, device=device), dim=-1
+    )
     quats = F.normalize(torch.randn(N, 4, device=device))
     scales = torch.rand(N, 3, device=device) + 0.1
     opacities = torch.rand(N, device=device)
@@ -86,8 +88,12 @@ def generate_point_cloud(
 
     pc_xyz = torch.stack(
         [
-            torch.cos(azim_elev[..., 1].deg2rad()) * torch.cos(azim_elev[..., 0].deg2rad()) * pc_range,
-            torch.cos(azim_elev[..., 1].deg2rad()) * torch.sin(azim_elev[..., 0].deg2rad()) * pc_range,
+            torch.cos(azim_elev[..., 1].deg2rad())
+            * torch.cos(azim_elev[..., 0].deg2rad())
+            * pc_range,
+            torch.cos(azim_elev[..., 1].deg2rad())
+            * torch.sin(azim_elev[..., 0].deg2rad())
+            * pc_range,
             torch.sin(azim_elev[..., 1].deg2rad()) * pc_range,
         ],
         dim=-1,
@@ -115,7 +121,11 @@ def build_raster_pts(
     """根据点云与瓦片设置生成 raster_pts 与边界/偏移。"""
     elevation_boundaries = torch.cat([
         elevations[0:1] - 1.0,
-        (elevations[tile_height::tile_height] + elevations[tile_height - 1 : -1 : tile_height]) / 2,
+        (
+            elevations[tile_height::tile_height]
+            + elevations[tile_height - 1 : -1 : tile_height]
+        )
+        / 2,
         elevations[-1:] + 1.0,
     ])
 
@@ -168,24 +178,26 @@ def run_rasterization(
     """执行激光雷达栅格化并返回主要结果。"""
     lidar_features = features.unsqueeze(0)
     print(f"{lidar_features.shape=}")
-    rendered_feat, rendered_alpha, alpha_sum_until_points, meta_info = lidar_rasterization(
-        means=means,
-        quats=quats,
-        scales=scales,
-        opacities=opacities,
-        lidar_features=lidar_features,
-        velocities=velocities,
-        viewmats=viewmats,
-        raster_pts=raster_pts[..., :4],
-        tile_elevation_boundaries=elevation_boundaries.clone(),
-        min_azimuth=min_azimuth,
-        max_azimuth=max_azimuth,
-        min_elevation=min_elevation,
-        max_elevation=max_elevation,
-        n_elevation_channels=n_elevation_channels,
-        azimuth_resolution=azimuth_resolution,
-        tile_width=tile_width,
-        tile_height=tile_height,
+    rendered_feat, rendered_alpha, alpha_sum_until_points, meta_info = (
+        lidar_rasterization(
+            means=means,
+            quats=quats,
+            scales=scales,
+            opacities=opacities,
+            lidar_features=lidar_features,
+            velocities=velocities,
+            viewmats=viewmats,
+            raster_pts=raster_pts[..., :4],
+            tile_elevation_boundaries=elevation_boundaries.clone(),
+            min_azimuth=min_azimuth,
+            max_azimuth=max_azimuth,
+            min_elevation=min_elevation,
+            max_elevation=max_elevation,
+            n_elevation_channels=n_elevation_channels,
+            azimuth_resolution=azimuth_resolution,
+            tile_width=tile_width,
+            tile_height=tile_height,
+        )
     )
     return rendered_feat, rendered_alpha, alpha_sum_until_points, meta_info
 
@@ -206,7 +218,9 @@ def postprocess_predictions(
     valid_rendered_expected_depth = rendered_expected_depth[valid_pixels]
     valid_rendered_median_depth = rendered_median_depth[valid_pixels].squeeze(-1)
 
-    pred_points_spherical = torch.cat([valid_raster_pts[..., :2], valid_rendered_expected_depth[:, None]], dim=-1)
+    pred_points_spherical = torch.cat(
+        [valid_raster_pts[..., :2], valid_rendered_expected_depth[:, None]], dim=-1
+    )
 
     pred_points_xyz_expected_depth = torch.stack(
         [
@@ -216,7 +230,8 @@ def postprocess_predictions(
             torch.cos(pred_points_spherical[..., 1].deg2rad())
             * torch.sin(pred_points_spherical[..., 0].deg2rad())
             * pred_points_spherical[..., 2],
-            torch.sin(pred_points_spherical[..., 1].deg2rad()) * pred_points_spherical[..., 2],
+            torch.sin(pred_points_spherical[..., 1].deg2rad())
+            * pred_points_spherical[..., 2],
         ],
         dim=-1,
     )
@@ -229,7 +244,8 @@ def postprocess_predictions(
             torch.cos(pred_points_spherical[..., 1].deg2rad())
             * torch.sin(pred_points_spherical[..., 0].deg2rad())
             * valid_rendered_median_depth,
-            torch.sin(pred_points_spherical[..., 1].deg2rad()) * valid_rendered_median_depth,
+            torch.sin(pred_points_spherical[..., 1].deg2rad())
+            * valid_rendered_median_depth,
         ],
         dim=-1,
     )
@@ -261,7 +277,9 @@ def save_visualizations(
     ax.set_title("Range Image")
     im = ax.imshow(range_img, cmap="gray")
     fig.colorbar(im, ax=ax)
-    fig.savefig(os.path.join(output_dir, "raster_range.png"), dpi=200, bbox_inches="tight")
+    fig.savefig(
+        os.path.join(output_dir, "raster_range.png"), dpi=200, bbox_inches="tight"
+    )
     plt.close(fig)
 
     if raster_pts.shape[-1] >= 5:
@@ -271,7 +289,11 @@ def save_visualizations(
         ax.set_title("Intensity Image")
         im = ax.imshow(intensity_img, cmap="gray")
         fig.colorbar(im, ax=ax)
-        fig.savefig(os.path.join(output_dir, "raster_intensity.png"), dpi=200, bbox_inches="tight")
+        fig.savefig(
+            os.path.join(output_dir, "raster_intensity.png"),
+            dpi=200,
+            bbox_inches="tight",
+        )
         plt.close(fig)
 
     exp_depth = expected_depth_map[0].detach().cpu().numpy()
@@ -280,7 +302,9 @@ def save_visualizations(
     ax.set_title("Expected Depth Map")
     im = ax.imshow(exp_depth, cmap="viridis")
     fig.colorbar(im, ax=ax)
-    fig.savefig(os.path.join(output_dir, "expected_depth_map.png"), dpi=200, bbox_inches="tight")
+    fig.savefig(
+        os.path.join(output_dir, "expected_depth_map.png"), dpi=200, bbox_inches="tight"
+    )
     plt.close(fig)
 
     med_depth = median_depth_map[0].detach().cpu().numpy().squeeze(-1)
@@ -289,7 +313,9 @@ def save_visualizations(
     ax.set_title("Median Depth Map")
     im = ax.imshow(med_depth, cmap="viridis")
     fig.colorbar(im, ax=ax)
-    fig.savefig(os.path.join(output_dir, "median_depth_map.png"), dpi=200, bbox_inches="tight")
+    fig.savefig(
+        os.path.join(output_dir, "median_depth_map.png"), dpi=200, bbox_inches="tight"
+    )
     plt.close(fig)
 
     sph = pred_points_spherical.detach().cpu().numpy()
@@ -340,7 +366,9 @@ def save_visualizations(
             show_window=True,
         )
     else:
-        print("Open3D 未安装，跳过 Open3D 点云导出与交互显示。可通过 `pip install open3d` 安装后重试。")
+        print(
+            "Open3D 未安装，跳过 Open3D 点云导出与交互显示。可通过 `pip install open3d` 安装后重试。"
+        )
 
 
 def save_point_cloud_open3d(
@@ -429,24 +457,26 @@ def main():
 
     viewmats = torch.eye(4, device=device).unsqueeze(0)
 
-    rendered_feat, rendered_alpha, alpha_sum_until_points, meta_info = run_rasterization(
-        means,
-        quats,
-        scales,
-        opacities,
-        features,
-        velocities,
-        viewmats,
-        raster_pts,
-        elevation_boundaries,
-        min_azimuth,
-        max_azimuth,
-        min_elevation,
-        max_elevation,
-        n_elevation_channels,
-        azimuth_resolution,
-        tile_width,
-        tile_height,
+    rendered_feat, rendered_alpha, alpha_sum_until_points, meta_info = (
+        run_rasterization(
+            means,
+            quats,
+            scales,
+            opacities,
+            features,
+            velocities,
+            viewmats,
+            raster_pts,
+            elevation_boundaries,
+            min_azimuth,
+            max_azimuth,
+            min_elevation,
+            max_elevation,
+            n_elevation_channels,
+            azimuth_resolution,
+            tile_width,
+            tile_height,
+        )
     )
 
     (
