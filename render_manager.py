@@ -223,7 +223,7 @@ class RenderManager:
                 }
         return resp
 
-    def render_frame(self, params: FrameParams) -> FrameResp:  # noqa: C901
+    def render_frame(self, params: FrameParams) -> FrameResp:
         """渲染接口，每帧调用"""
         # 输入验证
         if not params.ego_trajectory or len(params.ego_trajectory) != 3:
@@ -241,169 +241,230 @@ class RenderManager:
         total_points = self.static_points + dynamic_points
 
         # 直接使用预分配buffer，避免创建临时对象和tuple解包
-        render_means = self.render_buffer["means"][:total_points]
-        render_quats = self.render_buffer["quats"][:total_points]
-        render_scales = self.render_buffer["scales"][:total_points]
-        render_opacities = self.render_buffer["opacities"][:total_points]
-        render_colors = self.render_buffer["colors"][:total_points]
-        images = {}
-        # 使用预计算的相机数据，零查找开销
-        if self.render_camera:
-            for resolution, cam_data in self.camera_data.items():
-                # 直接使用预计算的数据，无需运行时转换
-                camera_ids = cam_data["camera_ids"]
-                extrinsics_list = cam_data["extrinsics_list"]
-                Ks = cam_data["intrinsics_tensor"]
-                width = cam_data["width"]
-                height = cam_data["height"]
+        # 准备渲染参数
+        render_params = (
+            self.render_buffer["means"][:total_points],
+            self.render_buffer["quats"][:total_points],
+            self.render_buffer["scales"][:total_points],
+            self.render_buffer["opacities"][:total_points],
+            self.render_buffer["colors"][:total_points],
+        )
 
-                viewmats = calculate_viewmats(
-                    extrinsics_list, ego_heading, ego_position
-                )
+        # 1. 相机渲染
+        images = self._render_cameras(ego_heading, ego_position, render_params)
 
-                # 渲染并收集结果 - 直接传递预分配buffer参数
-                batch_colors, batch_alphas = render(
-                    render_means,
-                    render_quats,
-                    render_scales,
-                    render_opacities,
-                    render_colors,
-                    viewmats,
-                    Ks,
-                    width,
-                    height,
-                )
-                batch_colors = (batch_colors.clamp(0, 1) * 255).to(torch.uint8)
-                for cam_id, image in zip(camera_ids, batch_colors):
-                    images[cam_id] = image
-
-        # 激光雷达渲染
-        lidars = {}
-        if self.render_lidar:
-            for lidar_id, lidar_cfg in self.lidar_data.items():
-                viewmats = calculate_viewmats(
-                    [lidar_cfg["extrinsics"]], ego_heading, ego_position
-                )
-                lidar_features = self._compute_lidar_features_from_colors(
-                    render_colors, render_means, viewmats
-                )
-                raster_pts = lidar_cfg["raster_pts"]
-                rendered_feat, rendered_alpha, alpha_sum_until_points, meta_info = (
-                    lidar_rasterization(
-                        means=render_means,
-                        quats=render_quats,
-                        scales=render_scales,
-                        opacities=render_opacities.squeeze(-1),
-                        lidar_features=lidar_features,
-                        velocities=None,
-                        viewmats=viewmats,
-                        raster_pts=raster_pts[..., :4],
-                        tile_elevation_boundaries=lidar_cfg["elevation_boundaries"],
-                        min_azimuth=lidar_cfg["min_azimuth"],
-                        max_azimuth=lidar_cfg["max_azimuth"],
-                        min_elevation=lidar_cfg["min_elevation"],
-                        max_elevation=lidar_cfg["max_elevation"],
-                        n_elevation_channels=lidar_cfg["elevations"].shape[0],
-                        azimuth_resolution=lidar_cfg["azimuth_resolution"],
-                        tile_width=lidar_cfg["tile_width"],
-                        tile_height=lidar_cfg["tile_height"],
-                        near_plane=self.lidars[lidar_id].near_plane
-                        if lidar_id in self.lidars
-                        else 0.01,
-                        far_plane=self.lidars[lidar_id].far_plane
-                        if lidar_id in self.lidars
-                        else 1e10,
-                        radius_clip=0.0,
-                        sparse_grad=False,
-                        absgrad=True,
-                        channel_chunk=128,
-                        compute_alpha_sum_until_points=False,
-                        compute_alpha_sum_until_points_threshold=0.8,
-                    )
-                )
-                raster_pts_did_return = (raster_pts[..., 2] <= 1000).squeeze(0)
-                raster_pts_valid_depth_and_did_return = raster_pts_did_return & (
-                    raster_pts[..., 2] > 0
-                ).squeeze(0)
-                gt_valid = (raster_pts[..., 2] > 0).squeeze(0)
-
-                lidar_intensity = rendered_feat[..., 0].squeeze(0)
-                lidar_ray_drop_logits = rendered_feat[..., 1].squeeze(0)
-                lidar_depth_render = rendered_feat[..., -1].squeeze(0)
-
-                if (
-                    raster_pts_valid_depth_and_did_return.shape
-                    != lidar_depth_render.shape
-                ):
-                    if (
-                        raster_pts_valid_depth_and_did_return.transpose(0, 1).shape
-                        == lidar_depth_render.shape
-                    ):
-                        raster_pts_valid_depth_and_did_return = (
-                            raster_pts_valid_depth_and_did_return.transpose(0, 1)
-                        )
-                    elif (
-                        raster_pts_valid_depth_and_did_return.numel()
-                        == lidar_depth_render.numel()
-                    ):
-                        raster_pts_valid_depth_and_did_return = (
-                            raster_pts_valid_depth_and_did_return.reshape(
-                                lidar_depth_render.shape
-                            )
-                        )
-
-                if gt_valid.shape != lidar_depth_render.shape:
-                    if gt_valid.transpose(0, 1).shape == lidar_depth_render.shape:
-                        gt_valid = gt_valid.transpose(0, 1)
-                    elif gt_valid.numel() == lidar_depth_render.numel():
-                        gt_valid = gt_valid.reshape(lidar_depth_render.shape)
-
-                valid_mask = raster_pts_valid_depth_and_did_return.to(
-                    lidar_depth_render.dtype
-                )
-                lidar_intensity = lidar_intensity * valid_mask
-                lidar_depth_render = lidar_depth_render * valid_mask
-
-                gt_valid_mask = gt_valid.to(lidar_ray_drop_logits.dtype)
-                lidar_ray_drop_logits = (
-                    lidar_ray_drop_logits * gt_valid_mask
-                    - (1.0 - gt_valid_mask) * 10000.0
-                )
-
-                # 深度滤波
-                if True:
-                    # 使用相邻列深度差异进行滤波
-                    depth_modified = lidar_depth_render.clone()
-                    depth_sample = depth_modified  # 现在形状是 [H, W]
-
-                    # 计算相邻列的深度差异 (列方向: width维度，对应维度1)
-                    depth_diff = depth_sample[:, 1:] - depth_sample[:, :-1]
-                    depth_diff = torch.abs(depth_diff)
-
-                    # 深度差异大于0.5的位置设为0,否则为1
-                    depth_diff_mask = torch.where(depth_diff > 0.5, 0, 1).float()
-
-                    # 创建完整mask,第一列保持为1
-                    full_mask = torch.ones_like(depth_sample)  # [H, W]
-                    full_mask[:, 1:] = depth_diff_mask  # 填充除第一列外的部分
-
-                    # 应用mask
-                    lidar_depth_render = lidar_depth_render * full_mask
-                    lidar_intensity = lidar_intensity * full_mask
-
-                out = {
-                    "depth": lidar_depth_render,
-                    "intensity": lidar_intensity,
-                    "ray_drop_prob": lidar_ray_drop_logits,
-                }
-                from util import pano_to_lidar_with_intensities
-
-                pred, gt = pano_to_lidar_with_intensities(raster_pts, out)
-                lidars[lidar_id] = pred
+        # 2. 激光雷达渲染
+        lidars = self._render_lidars(ego_heading, ego_position, render_params)
 
         return FrameResp(
             timestamp=params.timestamp, images=images, error_msg=None, lidars=lidars
         )
+
+    def _render_cameras(
+        self,
+        ego_heading: float,
+        ego_position: torch.Tensor,
+        render_params: Tuple[torch.Tensor, ...],
+    ) -> Dict[str, torch.Tensor]:
+        """渲染所有相机图像"""
+        images = {}
+        if not self.render_camera:
+            return images
+
+        (
+            render_means,
+            render_quats,
+            render_scales,
+            render_opacities,
+            render_colors,
+        ) = render_params
+
+        # 使用预计算的相机数据，零查找开销
+        for resolution, cam_data in self.camera_data.items():
+            # 直接使用预计算的数据，无需运行时转换
+            camera_ids = cam_data["camera_ids"]
+            extrinsics_list = cam_data["extrinsics_list"]
+            Ks = cam_data["intrinsics_tensor"]
+            width = cam_data["width"]
+            height = cam_data["height"]
+
+            viewmats = calculate_viewmats(extrinsics_list, ego_heading, ego_position)
+
+            # 渲染并收集结果
+            batch_colors, batch_alphas = render(
+                render_means,
+                render_quats,
+                render_scales,
+                render_opacities,
+                render_colors,
+                viewmats,
+                Ks,
+                width,
+                height,
+            )
+            batch_colors = (batch_colors.clamp(0, 1) * 255).to(torch.uint8)
+            for cam_id, image in zip(camera_ids, batch_colors):
+                images[cam_id] = image
+        return images
+
+    def _render_lidars(
+        self,
+        ego_heading: float,
+        ego_position: torch.Tensor,
+        render_params: Tuple[torch.Tensor, ...],
+    ) -> Dict[str, torch.Tensor]:
+        """渲染所有激光雷达点云"""
+        lidars = {}
+        if not self.render_lidar:
+            return lidars
+
+        (
+            render_means,
+            render_quats,
+            render_scales,
+            render_opacities,
+            render_colors,
+        ) = render_params
+
+        for lidar_id, lidar_cfg in self.lidar_data.items():
+            viewmats = calculate_viewmats(
+                [lidar_cfg["extrinsics"]], ego_heading, ego_position
+            )
+            lidar_features = self._compute_lidar_features_from_colors(
+                render_colors, render_means, viewmats
+            )
+            raster_pts = lidar_cfg["raster_pts"]
+
+            # 获取配置的远近平面
+            near_plane = (
+                self.lidars[lidar_id].near_plane if lidar_id in self.lidars else 0.01
+            )
+            far_plane = (
+                self.lidars[lidar_id].far_plane if lidar_id in self.lidars else 1e10
+            )
+
+            rendered_feat, rendered_alpha, alpha_sum_until_points, meta_info = (
+                lidar_rasterization(
+                    means=render_means,
+                    quats=render_quats,
+                    scales=render_scales,
+                    opacities=render_opacities.squeeze(-1),
+                    lidar_features=lidar_features,
+                    velocities=None,
+                    viewmats=viewmats,
+                    raster_pts=raster_pts[..., :4],
+                    tile_elevation_boundaries=lidar_cfg["elevation_boundaries"],
+                    min_azimuth=lidar_cfg["min_azimuth"],
+                    max_azimuth=lidar_cfg["max_azimuth"],
+                    min_elevation=lidar_cfg["min_elevation"],
+                    max_elevation=lidar_cfg["max_elevation"],
+                    n_elevation_channels=lidar_cfg["elevations"].shape[0],
+                    azimuth_resolution=lidar_cfg["azimuth_resolution"],
+                    tile_width=lidar_cfg["tile_width"],
+                    tile_height=lidar_cfg["tile_height"],
+                    near_plane=near_plane,
+                    far_plane=far_plane,
+                    radius_clip=0.0,
+                    sparse_grad=False,
+                    absgrad=True,
+                    channel_chunk=128,
+                    compute_alpha_sum_until_points=False,
+                    compute_alpha_sum_until_points_threshold=0.8,
+                )
+            )
+
+            # 后处理：Mask处理与深度滤波
+            out = self._process_lidar_output(raster_pts, rendered_feat)
+
+            from util import pano_to_lidar_with_intensities
+
+            pred, gt = pano_to_lidar_with_intensities(raster_pts, out)
+            lidars[lidar_id] = pred
+
+        return lidars
+
+    def _process_lidar_output(
+        self, raster_pts: torch.Tensor, rendered_feat: torch.Tensor
+    ) -> Dict[str, torch.Tensor]:
+        """处理Lidar渲染的原始输出，包括Mask对齐和深度滤波"""
+        lidar_intensity = rendered_feat[..., 0].squeeze(0)
+        lidar_ray_drop_logits = rendered_feat[..., 1].squeeze(0)
+        lidar_depth_render = rendered_feat[..., -1].squeeze(0)
+
+        # 计算有效性Mask
+        raster_pts_did_return = (raster_pts[..., 2] <= 1000).squeeze(0)
+        raster_pts_valid_depth_and_did_return = raster_pts_did_return & (
+            raster_pts[..., 2] > 0
+        ).squeeze(0)
+        gt_valid = (raster_pts[..., 2] > 0).squeeze(0)
+
+        # 形状对齐处理 (兼容性代码)
+        if raster_pts_valid_depth_and_did_return.shape != lidar_depth_render.shape:
+            if (
+                raster_pts_valid_depth_and_did_return.transpose(0, 1).shape
+                == lidar_depth_render.shape
+            ):
+                raster_pts_valid_depth_and_did_return = (
+                    raster_pts_valid_depth_and_did_return.transpose(0, 1)
+                )
+            elif (
+                raster_pts_valid_depth_and_did_return.numel()
+                == lidar_depth_render.numel()
+            ):
+                raster_pts_valid_depth_and_did_return = (
+                    raster_pts_valid_depth_and_did_return.reshape(
+                        lidar_depth_render.shape
+                    )
+                )
+
+        if gt_valid.shape != lidar_depth_render.shape:
+            if gt_valid.transpose(0, 1).shape == lidar_depth_render.shape:
+                gt_valid = gt_valid.transpose(0, 1)
+            elif gt_valid.numel() == lidar_depth_render.numel():
+                gt_valid = gt_valid.reshape(lidar_depth_render.shape)
+
+        # 应用Mask
+        valid_mask = raster_pts_valid_depth_and_did_return.to(lidar_depth_render.dtype)
+        lidar_intensity = lidar_intensity * valid_mask
+        lidar_depth_render = lidar_depth_render * valid_mask
+
+        gt_valid_mask = gt_valid.to(lidar_ray_drop_logits.dtype)
+        lidar_ray_drop_logits = (
+            lidar_ray_drop_logits * gt_valid_mask - (1.0 - gt_valid_mask) * 10000.0
+        )
+
+        # 深度滤波
+        lidar_depth_render, lidar_intensity = self._apply_depth_filter(
+            lidar_depth_render, lidar_intensity
+        )
+
+        return {
+            "depth": lidar_depth_render,
+            "intensity": lidar_intensity,
+            "ray_drop_prob": lidar_ray_drop_logits,
+        }
+
+    def _apply_depth_filter(
+        self, depth: torch.Tensor, intensity: torch.Tensor
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """对深度图进行滤波，去除边缘伪影"""
+        # 使用相邻列深度差异进行滤波
+        depth_modified = depth.clone()
+        depth_sample = depth_modified  # [H, W]
+
+        # 计算相邻列的深度差异 (列方向: width维度，对应维度1)
+        depth_diff = depth_sample[:, 1:] - depth_sample[:, :-1]
+        depth_diff = torch.abs(depth_diff)
+
+        # 深度差异大于0.5的位置设为0,否则为1
+        depth_diff_mask = (depth_diff <= 0.5).float()
+
+        # 创建完整mask,第一列保持为1
+        full_mask = torch.ones_like(depth_sample)
+        full_mask[:, 1:] = depth_diff_mask
+
+        # 应用mask
+        return depth * full_mask, intensity * full_mask
 
     def _compute_lidar_features_from_colors(
         self,
