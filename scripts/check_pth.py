@@ -57,7 +57,7 @@ def load_and_inspect_pth(pth_path):  # noqa: C901
 
 
 if __name__ == "__main__":
-    pth_path = "/home/saimo/work/render/049_multimodal.pth"
+    pth_path = "/home/saimo/work/render/049_multimodal_1229.pth"
     # pth_path = "/home/saimo/work/render/yiqi_1212/iteration_180000.pth"
 
     checkpoint = load_and_inspect_pth(pth_path)

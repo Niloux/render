@@ -201,15 +201,32 @@ class RenderManager:
                     lidar.max_elevation,
                     self.device,
                 )
-                raster_pts, elevation_boundaries = build_raster_pts(
-                    point_cloud,
-                    azimuths,
-                    elevations,
-                    lidar.azimuth_resolution,
-                    lidar.min_azimuth,
-                    lidar.tile_width,
-                    lidar.tile_height,
-                )
+
+                if self.model.raster_pts is not None:
+                    print(f"raster_pts shape: {self.model.raster_pts.shape}")
+                    raster_pts = self.model.raster_pts
+                    # 计算elevation_boundaries, [n_elevation_channels//tile_height + 1]
+                    tile_height = lidar.tile_height
+                    elevation_boundaries = torch.cat([
+                        elevations[0:1] - 1.0,
+                        (
+                            elevations[tile_height::tile_height]
+                            + elevations[tile_height - 1 : -1 : tile_height]
+                        )
+                        / 2,
+                        elevations[-1:] + 1.0,
+                    ])
+                else:
+                    raster_pts, elevation_boundaries = build_raster_pts(
+                        point_cloud,
+                        azimuths,
+                        elevations,
+                        lidar.azimuth_resolution,
+                        lidar.min_azimuth,
+                        lidar.tile_width,
+                        lidar.tile_height,
+                    )
+
                 self.lidar_data[lidar.id] = {
                     "extrinsics": lidar.extrinsics,
                     "azimuths": azimuths,

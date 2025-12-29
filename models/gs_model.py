@@ -18,6 +18,7 @@ class GSModel:
         """初始化空的GSModel。"""
         self.components: Dict[str, GaussianComponent] = {}
         self.iteration: int = 0
+        self.raster_pts: Optional[torch.Tensor] = None
 
     @classmethod
     def load_from_pth(cls, pth_path: Union[str, Path]) -> "GSModel":
@@ -35,6 +36,10 @@ class GSModel:
         # 加载迭代次数
         if "iter" in checkpoint:
             model.iteration = checkpoint["iter"]
+
+        # 加载raster_pts
+        if "raster_pts" in checkpoint:
+            model.raster_pts = checkpoint["raster_pts"]
 
         # 加载各个组件
         for name, data in checkpoint.items():
@@ -168,6 +173,8 @@ class GSModel:
         """
         new_model = GSModel()
         new_model.iteration = self.iteration
+        if self.raster_pts is not None:
+            new_model.raster_pts = self.raster_pts.to(device)
 
         for name, component in self.components.items():
             new_model.components[name] = component.to_device(device)
