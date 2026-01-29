@@ -19,6 +19,7 @@ class GSModel:
         self.components: Dict[str, GaussianComponent] = {}
         self.iteration: int = 0
         self.raster_pts: Optional[torch.Tensor] = None
+        self.rgb_decoder_state: Optional[dict] = None
 
     @classmethod
     def load_from_pth(cls, pth_path: Union[str, Path]) -> "GSModel":
@@ -40,6 +41,9 @@ class GSModel:
         # 加载raster_pts
         if "raster_pts" in checkpoint:
             model.raster_pts = checkpoint["raster_pts"]
+
+        if "rgb_decoder" in checkpoint:
+            model.rgb_decoder_state = checkpoint["rgb_decoder"]
 
         # 加载各个组件
         for name, data in checkpoint.items():
@@ -173,6 +177,7 @@ class GSModel:
         """
         new_model = GSModel()
         new_model.iteration = self.iteration
+        new_model.rgb_decoder_state = self.rgb_decoder_state
         if self.raster_pts is not None:
             new_model.raster_pts = self.raster_pts.to(device)
 

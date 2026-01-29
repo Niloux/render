@@ -1,4 +1,5 @@
 import math
+from typing import List, Optional, Sequence
 
 import torch
 from gsplat.cuda._wrapper import (
@@ -13,7 +14,6 @@ from gsplat import (
     isect_tiles,
     rasterization,
     rasterize_to_pixels,
-    spherical_harmonics,
 )
 
 NATIVE = True
@@ -38,8 +38,66 @@ def extract_camera_centers(viewmats: torch.Tensor):
     return camera_centers
 
 
+def invert_world2camera(viewmats: torch.Tensor) -> torch.Tensor:
+    """将World2Camera的4x4矩阵批量求逆，得到Camera2World矩阵。"""
+    R = viewmats[..., :3, :3]
+    t = viewmats[..., :3, 3:4]
+    Rt = R.transpose(-2, -1)
+    t_inv = -Rt @ t
+    c2w = (
+        torch
+        .eye(4, device=viewmats.device, dtype=viewmats.dtype)
+        .expand(*viewmats.shape[:-2], 4, 4)
+        .clone()
+    )
+    c2w[..., :3, :3] = Rt
+    c2w[..., :3, 3:4] = t_inv
+    return c2w
+
+
+def get_ray_dirs_pinhole_batched(
+    Ks: torch.Tensor, width: int, height: int, c2w: torch.Tensor
+) -> torch.Tensor:
+    """为每个相机生成归一化的世界系射线方向，输出形状为[C, H, W, 3]。"""
+    device = Ks.device
+    dtype = Ks.dtype
+    C = Ks.shape[0]
+
+    fx = Ks[:, 0, 0].view(C, 1, 1)
+    fy = Ks[:, 1, 1].view(C, 1, 1)
+    cx = Ks[:, 0, 2].view(C, 1, 1)
+    cy = Ks[:, 1, 2].view(C, 1, 1)
+
+    ys = torch.arange(height, device=device, dtype=dtype).view(1, height, 1)
+    xs = torch.arange(width, device=device, dtype=dtype).view(1, 1, width)
+
+    ys = (ys + 0.5 - cy) / fy
+    xs = (xs + 0.5 - cx) / fx
+
+    xs = xs.expand(C, height, width)
+    ys = ys.expand(C, height, width)
+
+    dirs_cam = torch.stack([xs, -ys, -torch.ones_like(xs)], dim=-1)  # [C, H, W, 3]
+    dirs_cam = dirs_cam.view(C, -1, 3)
+
+    R = c2w[:, :3, :3]  # [C, 3, 3]
+    dirs_world = torch.bmm(dirs_cam, R.transpose(1, 2))
+    dirs_world = dirs_world / (dirs_world.norm(dim=-1, keepdim=True) + 1e-8)
+    return dirs_world.view(C, height, width, 3)
+
+
 def render_gaussian_splatting(
-    means, quats, scales, opacities, colors, viewmats, Ks, img_width, img_height
+    means,
+    quats,
+    scales,
+    opacities,
+    colors,
+    viewmats,
+    Ks,
+    img_width,
+    img_height,
+    rgb_decoder=None,
+    camera_ids: Optional[Sequence[str]] = None,
 ):
     """
     执行高斯点云渲染的核心函数
@@ -59,6 +117,14 @@ def render_gaussian_splatting(
         render_colors: 渲染的颜色图像 [C, H, W, 4]
         render_alphas: 渲染的alpha通道 [C, H, W, 1]
     """
+    # 保持与rasterization一致：当颜色包含额外通道时，只取相机渲染用的前三个通道
+    if colors.dim() == 3 and colors.shape[1] == 4 and colors.shape[2] >= 3:
+        colors = colors[..., :3]
+    if colors.dim() != 3 or colors.shape[1] != 4 or colors.shape[2] != 3:
+        raise ValueError(
+            f"CNN渲染分支期望colors形状为[N, 4, 3] (sh_degree=1)，实际为{tuple(colors.shape)}"
+        )
+
     # 投影
     project_results = fully_fused_projection(
         means=means,
@@ -85,7 +151,7 @@ def render_gaussian_splatting(
     tile_size = 16
     tile_width = math.ceil(img_width / float(tile_size))
     tile_height = math.ceil(img_height / float(tile_size))
-    tiles_per_gauss, isect_ids, flatten_ids = isect_tiles(
+    _tiles_per_gauss, isect_ids, flatten_ids = isect_tiles(
         means2d,
         radii,
         depths,
@@ -99,21 +165,15 @@ def render_gaussian_splatting(
         isect_ids, viewmats.shape[0], tile_width, tile_height
     )
 
-    # 球谐函数处理
-    camera_centers = extract_camera_centers(viewmats)  # [C, 3]
-    dirs = means[None, :, :] - camera_centers[:, None, :]  # [C, N, 3]
-    masks = (radii > 0).all(dim=-1)
-    # masks = radii > 0  # [C, N]
+    # 将每个点的SH系数展平为每个点的特征，直接光栅化到像素
     shs = colors.expand(viewmats.shape[0], -1, -1, -1)  # [C, N, K, 3]
-    batch_colors = spherical_harmonics(1, dirs, shs, masks=masks)  # [C, N, 3]
-    batch_colors = torch.clamp_min(batch_colors + 0.5, 0.0)
-    batch_colors = torch.cat((batch_colors, depths[..., None]), dim=-1)
+    colors = shs.contiguous().view(viewmats.shape[0], shs.shape[1], -1)
 
     # 光栅化
     render_colors, render_alphas = rasterize_to_pixels(
         means2d,
         conics,
-        batch_colors,
+        colors,
         batch_opacities,
         img_width,
         img_height,
@@ -125,7 +185,24 @@ def render_gaussian_splatting(
         absgrad=True,
     )
 
-    return render_colors, render_alphas
+    if rgb_decoder is None:
+        raise ValueError("启用CNN渲染分支时必须传入rgb_decoder实例")
+    if camera_ids is None:
+        raise ValueError("启用CNN渲染分支时必须传入camera_ids")
+    if len(camera_ids) != viewmats.shape[0]:
+        raise ValueError(
+            f"camera_ids数量与viewmats不一致: camera_ids={len(camera_ids)} viewmats={viewmats.shape[0]}"
+        )
+
+    c2w = invert_world2camera(viewmats)
+    ray_dirs = get_ray_dirs_pinhole_batched(Ks, img_width, img_height, c2w)
+    features = torch.cat([render_colors, ray_dirs], dim=-1)  # [C, H, W, 12+3]
+
+    decoded: List[torch.Tensor] = []
+    for cam_idx, cam_id in enumerate(camera_ids):
+        decoded.append(rgb_decoder(cam_id, features[cam_idx]))
+    rendered_rgb = torch.stack(decoded, dim=0)
+    return rendered_rgb, render_alphas
 
 
 def render_native(
@@ -168,7 +245,17 @@ def render_native(
 
 
 def render(
-    means, quats, scales, opacities, colors, viewmats, Ks, img_width, img_height
+    means,
+    quats,
+    scales,
+    opacities,
+    colors,
+    viewmats,
+    Ks,
+    img_width,
+    img_height,
+    rgb_decoder=None,
+    camera_ids: Optional[Sequence[str]] = None,
 ):
     if NATIVE:
         return render_native(
@@ -176,7 +263,17 @@ def render(
         )
     else:
         return render_gaussian_splatting(
-            means, quats, scales, opacities, colors, viewmats, Ks, img_width, img_height
+            means,
+            quats,
+            scales,
+            opacities,
+            colors,
+            viewmats,
+            Ks,
+            img_width,
+            img_height,
+            rgb_decoder=rgb_decoder,
+            camera_ids=camera_ids,
         )
 
 

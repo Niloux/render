@@ -22,12 +22,14 @@ from render_kernel import (
     generate_point_cloud,
     render,
 )
+from rgb_decoder import RGBDecoder
 from util import calculate_viewmats
 
 
 class RenderManager:
     def __init__(self, model: str = "model.path") -> None:
         self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+        self.model_path = model
         self.model = GSModel.load_from_pth(model).to_device(self.device)
         self.background: GaussianComponent = self.model.get_component("background")
         self.sky: GaussianComponent = self.model.get_component("sky")
@@ -47,6 +49,8 @@ class RenderManager:
         self.lidar_data: Dict[str, Dict] = {}
         self.render_camera: bool = True
         self.render_lidar: bool = False
+        self.rgb_decoder: RGBDecoder | None = None
+        self.camera_id_to_index: Dict[str, int] = {}
 
     def _setup_render_buffers(self) -> None:
         """预分配渲染buffers，消除每帧内存分配
@@ -84,7 +88,7 @@ class RenderManager:
             ),
             # TODO:这里的颜色维度也需要根据模型来进行调整
             "colors": torch.empty(
-                (total_max_points, 4, 5), device=device, dtype=torch.float32
+                (total_max_points, 4, 3), device=device, dtype=torch.float32
             ),
         }
 
@@ -163,7 +167,39 @@ class RenderManager:
             if resolution not in grouped:
                 grouped[resolution] = []
             grouped[resolution].append(i)
+        rgb_decoder_state = getattr(self.model, "rgb_decoder_state", None)
+        if rgb_decoder_state is not None and isinstance(rgb_decoder_state, dict):
+            params_state = rgb_decoder_state.get("params")
+            if (
+                isinstance(params_state, dict)
+                and "appearance_embedding" in params_state
+            ):
+                num_cams_ckpt = int(params_state["appearance_embedding"].shape[0])
+            else:
+                num_cams_ckpt = len(params.cameras)
+        else:
+            num_cams_ckpt = len(params.cameras)
+
+        if len(params.cameras) > num_cams_ckpt:
+            raise ValueError(
+                f"相机数量超过rgb_decoder权重支持范围: cameras={len(params.cameras)} ckpt={num_cams_ckpt}"
+            )
+
         self.cameras: Dict[Tuple[int, int], List[Camera]] = grouped
+        self.camera_id_to_index = {
+            cam.id: idx for idx, cam in enumerate(params.cameras)
+        }
+
+        self.rgb_decoder = RGBDecoder(
+            metadata={"num_cams": num_cams_ckpt},
+            device=self.device,
+            use_app_embed=True,
+            mode="image",
+        )
+        self.rgb_decoder.camera_id_map = self.camera_id_to_index
+        if rgb_decoder_state is not None:
+            self.rgb_decoder.load_state_dict(rgb_decoder_state, strict=True)
+        self.rgb_decoder.eval()
 
         # 计算所有相机的内参和外参tensor，消除运行时转换
         self.camera_data = {}
@@ -323,6 +359,8 @@ class RenderManager:
                 Ks,
                 width,
                 height,
+                rgb_decoder=self.rgb_decoder,
+                camera_ids=camera_ids,
             )
             batch_colors = (batch_colors.clamp(0, 1) * 255).to(torch.uint8)
             for cam_id, image in zip(camera_ids, batch_colors):

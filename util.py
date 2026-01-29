@@ -2,6 +2,7 @@ import os
 import time
 from typing import Dict, List
 
+import numpy as np
 import torch
 from PIL import Image
 
@@ -170,3 +171,30 @@ def pano_to_lidar_with_intensities(raster_pts, out):
     # print(gt_point_cloud.shape, pred_point_cloud.shape)
     # quit()
     return pred_point_cloud, gt_point_cloud
+
+
+def affine_inverse(A: np.ndarray):
+    R = A[..., :3, :3]  # ..., 3, 3
+    T = A[..., :3, 3:]  # ..., 3, 1
+    P = A[..., 3:, :]  # ..., 1, 4
+    return np.concatenate([np.concatenate([R.T, -R.T @ T], axis=-1), P], axis=-2)
+
+
+def get_ray_dirs_pinhole(K: torch.Tensor, width: int, height: int, c2w: torch.Tensor):
+    ys = (
+        torch.arange(height, device=K.device, dtype=torch.float32) + (0.5 - K[0, 1, 2])
+    ) / K[0, 1, 1]
+    xs = (
+        torch.arange(width, device=K.device, dtype=torch.float32) + (0.5 - K[0, 0, 2])
+    ) / K[0, 0, 0]
+    image_coords = torch.meshgrid(ys, xs, indexing="ij")
+    # flip y and z to align with nerfstudio convention
+    directions = torch.stack(
+        [image_coords[1], -image_coords[0], -torch.ones_like(image_coords[0])], dim=-1
+    )  # (h, w, 3)
+    directions = directions.view(-1, 3)
+    directions = torch.matmul(directions, c2w[0, :3, :3].transpose(0, 1))
+    directions = directions / directions.norm(dim=-1, keepdim=True)
+    directions = directions.view(height, width, 3)
+
+    return directions
