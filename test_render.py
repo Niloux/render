@@ -123,7 +123,7 @@ def create_test_scenario(
 
     # 创建帧参数
     frame_params = FrameParams(
-        ego_trajectory=[58.516522, 0.248655, -0.385647],
+        ego_trajectory=[72.516522, 0.648655, -0.685647],
         ego_yaw=0.03355,
         env_vehicles=vehicles,
         timestamp=20250912,

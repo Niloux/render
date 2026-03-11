@@ -16,7 +16,7 @@ from gsplat import (
     rasterize_to_pixels,
 )
 
-NATIVE = True
+NATIVE = False
 
 
 def extract_camera_centers(viewmats: torch.Tensor):
