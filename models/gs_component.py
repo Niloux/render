@@ -5,10 +5,6 @@ from typing import Optional
 
 import torch
 
-from config import SKY_CENTER, SKY_RADIUS
-
-device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-
 
 @dataclass
 class GaussianComponent:
@@ -27,6 +23,8 @@ class GaussianComponent:
     rotation: torch.Tensor  # 四元数旋转 [N, 4] (wxyz格式)
     opacity: torch.Tensor  # logit透明度 [N, 1]
     semantic: Optional[torch.Tensor] = None  # [N, K] 语义信息
+    sky_center: Optional[torch.Tensor] = None  # [3]
+    sky_radius: Optional[torch.Tensor] = None  # [] or [1]
 
     @property
     def num_points(self) -> int:
@@ -101,6 +99,12 @@ class GaussianComponent:
             rotation=self.rotation.to(device),
             opacity=self.opacity.to(device),
             semantic=self.semantic.to(device) if self.semantic is not None else None,
+            sky_center=self.sky_center.to(device)
+            if self.sky_center is not None
+            else None,
+            sky_radius=self.sky_radius.to(device)
+            if self.sky_radius is not None
+            else None,
         )
 
     def __str__(self) -> str:
@@ -129,13 +133,19 @@ class GaussianComponent:
             if self.name == "background":
                 return self.xyz
             elif self.name == "sky":
-                dists = torch.linalg.norm(self.xyz - SKY_CENTER, dim=1)
-                ratios = dists / (2 * SKY_RADIUS)
-                # 将条件张量扩展到匹配xyz的形状 (N, 3)
-                condition = (ratios < 1.0).unsqueeze(1)  # (N, 1) -> 广播到 (N, 3)
+                if self.sky_center is None or self.sky_radius is None:
+                    raise ValueError(
+                        "sky组件缺少sky_center/sky_radius，请从pth加载scene参数"
+                    )
+                sky_center = self.sky_center.to(self.xyz)
+                sky_radius = self.sky_radius.to(self.xyz)
+                dists = torch.linalg.norm(self.xyz - sky_center, dim=1)
+                ratios = dists / (2 * sky_radius)
+                ratios_safe = ratios.clamp(min=1e-6)
+                condition = (ratios < 1.0).unsqueeze(1)
                 xyz = torch.where(
                     condition,
-                    SKY_CENTER + (self.xyz - SKY_CENTER) / ratios.unsqueeze(1),
+                    sky_center + (self.xyz - sky_center) / ratios_safe.unsqueeze(1),
                     self.xyz,
                 )
                 return xyz
@@ -217,7 +227,9 @@ class GaussianComponent:
         with torch.no_grad():
             if self.name == "sky":
                 scales = torch.exp(self.scaling)
-                return torch.clamp(scales, max=SKY_RADIUS)
+                if self.sky_radius is None:
+                    return scales
+                return torch.clamp(scales, max=self.sky_radius.to(scales))
             else:
                 return torch.exp(self.scaling)
 

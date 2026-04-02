@@ -242,7 +242,7 @@ def parse_args() -> Tuple[BenchmarkConfig, RenderConfig]:
     parser.add_argument(
         "--model-path",
         type=str,
-        default="/home/saimo/work/render/049_mcmc.pth",
+        default="/home/saimo/work/render/049_default.pth",
         help="模型文件路径",
     )
     parser.add_argument("--warmup", type=int, default=1, help="预热帧数")

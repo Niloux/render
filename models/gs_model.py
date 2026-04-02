@@ -8,6 +8,13 @@ import torch
 from .gs_component import GaussianComponent
 
 
+def _as_f32_tensor(value) -> torch.Tensor:
+    """将checkpoint里的场景参数统一转为float32 Tensor。"""
+    if isinstance(value, torch.Tensor):
+        return value.to(dtype=torch.float32)
+    return torch.as_tensor(value, dtype=torch.float32)
+
+
 class GSModel:
     """3DGS模型管理类。
 
@@ -21,8 +28,12 @@ class GSModel:
         self.raster_pts: Optional[torch.Tensor] = None
         self.rgb_decoder_state: Optional[dict] = None
 
+        self.map_center: Optional[torch.Tensor] = None
+        self.sky_center: Optional[torch.Tensor] = None
+        self.sky_radius: Optional[torch.Tensor] = None
+
     @classmethod
-    def load_from_pth(cls, pth_path: Union[str, Path]) -> "GSModel":
+    def load_from_pth(cls, pth_path: Union[str, Path]) -> "GSModel":  # noqa: C901
         """从PTH文件加载模型。
 
         Args:
@@ -31,7 +42,7 @@ class GSModel:
         Returns:
             加载的GSModel实例
         """
-        checkpoint = torch.load(pth_path, map_location="cpu")
+        checkpoint = torch.load(pth_path, map_location="cpu", weights_only=False)
         model = cls()
 
         # 加载迭代次数
@@ -45,9 +56,25 @@ class GSModel:
         if "rgb_decoder" in checkpoint:
             model.rgb_decoder_state = checkpoint["rgb_decoder"]
 
+        try:
+            model.map_center = _as_f32_tensor(checkpoint["center_point"])  # [3]
+            model.sky_center = _as_f32_tensor(checkpoint["sphere_center"])  # [3]
+            model.sky_radius = _as_f32_tensor(checkpoint["sphere_radius"])  # [1]
+        except KeyError as e:
+            raise KeyError(
+                "pth缺少场景参数键: 需要center_point/sphere_center/sphere_radius"
+            ) from e
+
         # 加载各个组件
         for name, data in checkpoint.items():
-            if name == "iter":
+            if name in (
+                "iter",
+                "raster_pts",
+                "rgb_decoder",
+                "center_point",
+                "sphere_center",
+                "sphere_radius",
+            ):
                 continue
 
             if isinstance(data, dict) and len(data) > 0:
@@ -61,16 +88,30 @@ class GSModel:
                     "opacity",
                 ]
                 if all(key in data for key in required_keys):
-                    component = GaussianComponent(
-                        name=name,
-                        xyz=data["xyz"],
-                        feature_dc=data["feature_dc"],
-                        feature_rest=data["feature_rest"],
-                        scaling=data["scaling"],
-                        rotation=data["rotation"],
-                        opacity=data["opacity"],
-                        semantic=data.get("semantic"),
-                    )
+                    if name == "sky":
+                        component = GaussianComponent(
+                            name=name,
+                            xyz=data["xyz"],
+                            feature_dc=data["feature_dc"],
+                            feature_rest=data["feature_rest"],
+                            scaling=data["scaling"],
+                            rotation=data["rotation"],
+                            opacity=data["opacity"],
+                            semantic=data.get("semantic"),
+                            sky_center=model.sky_center,
+                            sky_radius=model.sky_radius,
+                        )
+                    else:
+                        component = GaussianComponent(
+                            name=name,
+                            xyz=data["xyz"],
+                            feature_dc=data["feature_dc"],
+                            feature_rest=data["feature_rest"],
+                            scaling=data["scaling"],
+                            rotation=data["rotation"],
+                            opacity=data["opacity"],
+                            semantic=data.get("semantic"),
+                        )
 
                     if component.validate():
                         model.components[name] = component
@@ -85,7 +126,19 @@ class GSModel:
         Args:
             pth_path: 保存路径
         """
-        checkpoint = {"iter": self.iteration}
+        if (
+            self.map_center is None
+            or self.sky_center is None
+            or self.sky_radius is None
+        ):
+            raise ValueError("保存pth前必须设置map_center/sky_center/sky_radius")
+
+        checkpoint = {
+            "iter": self.iteration,
+            "center_point": self.map_center,
+            "sphere_center": self.sky_center,
+            "sphere_radius": self.sky_radius,
+        }
 
         for name, component in self.components.items():
             data = {
@@ -180,6 +233,16 @@ class GSModel:
         new_model.rgb_decoder_state = self.rgb_decoder_state
         if self.raster_pts is not None:
             new_model.raster_pts = self.raster_pts.to(device)
+
+        new_model.map_center = (
+            self.map_center.to(device) if self.map_center is not None else None
+        )
+        new_model.sky_center = (
+            self.sky_center.to(device) if self.sky_center is not None else None
+        )
+        new_model.sky_radius = (
+            self.sky_radius.to(device) if self.sky_radius is not None else None
+        )
 
         for name, component in self.components.items():
             new_model.components[name] = component.to_device(device)

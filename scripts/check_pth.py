@@ -57,7 +57,6 @@ def load_and_inspect_pth(pth_path):  # noqa: C901
 
 
 if __name__ == "__main__":
-    pth_path = "/home/saimo/work/render/049_mcmc.pth"
-    # pth_path = "/home/saimo/work/streetcrafter_multimodal/output/waymo/waymo_val_049/iteration_7000.pth"
+    pth_path = "/home/saimo/work/render/049_default.pth"
 
     checkpoint = load_and_inspect_pth(pth_path)

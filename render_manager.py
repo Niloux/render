@@ -3,7 +3,6 @@ from typing import Dict, List, Optional, Tuple
 import torch
 from gsplat.rendering import lidar_rasterization
 
-from config import MAP_CENTER
 from data_types import (
     Camera,
     FrameParams,
@@ -34,11 +33,12 @@ class RenderManager:
         self.background: GaussianComponent = self.model.get_component("background")
         self.sky: GaussianComponent = self.model.get_component("sky")
         self.actors: List[GaussianComponent] = self.model.get_components_by_type("obj")
-        # 修复 UserWarning: To copy construct from a tensor
-        if isinstance(MAP_CENTER, torch.Tensor):
-            self.map_center = MAP_CENTER.clone().detach().to(self.device)
-        else:
-            self.map_center = torch.tensor(MAP_CENTER, device=self.device)
+        map_center = getattr(self.model, "map_center", None)
+        if map_center is None:
+            raise ValueError(
+                "pth中缺少map_center(scene参数)，无法将ego轨迹转换到模型坐标系"
+            )  # noqa: E501
+        self.map_center = map_center.to(self.device)
 
         # 预构建环境车name到点云的映射
         self.actor_map: Dict[str, GaussianComponent] = {
