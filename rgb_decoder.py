@@ -1,3 +1,5 @@
+from typing import Any, Dict, Union
+
 import numpy as np
 import torch
 import torch.nn as nn
@@ -140,12 +142,87 @@ class RGBDecoderCNN(torch.nn.Module):
 
 
 class RGBDecoder(nn.Module):
+    @staticmethod
+    def _infer_cfg_from_state_dict(params: Dict[str, Any]) -> Dict[str, Any]:
+        appearance = params.get("appearance_embedding", None)
+        appearance_dim = (
+            int(appearance.shape[1]) if isinstance(appearance, torch.Tensor) else 0
+        )
+
+        conv_w = params.get("rgb_decoder.net.0.main_branch.0.weight", None)
+        if not isinstance(conv_w, torch.Tensor) or conv_w.ndim != 4:
+            return {
+                "appearance_dim": appearance_dim,
+                "use_app_embed": bool(appearance_dim),
+                "use_ray_dirs": True,
+                "sh_degree": 1,
+            }
+
+        in_channels = int(conv_w.shape[1])
+        input_dim = in_channels + 3
+        sh_degree = 1
+        sh_dim = 3 * (sh_degree + 1) ** 2
+
+        candidates = [
+            (sh_dim, False, False),
+            (sh_dim + 3, False, True),
+            (sh_dim + appearance_dim, True, False),
+            (sh_dim + 3 + appearance_dim, True, True),
+        ]
+
+        use_app_embed = False
+        use_ray_dirs = False
+        for cand_dim, cand_app, cand_ray in candidates:
+            if cand_dim == input_dim:
+                use_app_embed = cand_app
+                use_ray_dirs = cand_ray
+                break
+
+        return {
+            "appearance_dim": appearance_dim,
+            "use_app_embed": use_app_embed,
+            "use_ray_dirs": use_ray_dirs,
+            "sh_degree": sh_degree,
+        }
+
+    @classmethod
+    def from_checkpoint_state(
+        cls,
+        metadata: Dict[str, Any],
+        state_dict: Dict[str, Any],
+        device: Union[torch.device, str, None] = None,
+        mode: str = "sensor",
+    ) -> "RGBDecoder":
+        params = (
+            state_dict["params"]
+            if isinstance(state_dict, dict)
+            and "params" in state_dict
+            and isinstance(state_dict["params"], dict)
+            else state_dict
+        )
+        cfg = cls._infer_cfg_from_state_dict(params)
+        inst = cls(
+            metadata,
+            device=device,
+            use_app_embed=cfg["use_app_embed"],
+            mode=mode,
+            appearance_dim=cfg["appearance_dim"],
+            use_ray_dirs=cfg["use_ray_dirs"],
+            sh_degree=cfg["sh_degree"],
+        )
+        inst.load_state_dict(state_dict, strict=True)
+        return inst
+
     def __init__(
         self,
         metadata,
-        device: torch.device | str | None = None,
+        # device: torch.device | str | None = None,
+        device: Union[torch.device, str, None] = None,
         use_app_embed: bool = True,
         mode: str = "sensor",
+        appearance_dim: int = 8,
+        use_ray_dirs: bool = True,
+        sh_degree: int = 1,
     ):
         super().__init__()
         if device is None:
@@ -153,6 +230,8 @@ class RGBDecoder(nn.Module):
         self.device = torch.device(device)
         self.mode = mode
         self.use_app_embed = use_app_embed
+        self.use_ray_dirs = use_ray_dirs
+        self.sh_degree = sh_degree
         self.camera_id_map: dict | None = None
 
         num_corrections = metadata["num_cams"]
@@ -160,16 +239,18 @@ class RGBDecoder(nn.Module):
         self.appearance_embedding = nn.Parameter(
             torch.zeros(
                 num_corrections,
-                8,
+                appearance_dim,
                 device=self.device,
                 dtype=torch.float,
             ),
             requires_grad=True,
         )
+        sh_dim = 3 * (sh_degree + 1) ** 2
+        feature_dim = sh_dim + (3 if use_ray_dirs else 0)
         if self.use_app_embed:
-            input_dim = 3 * (1 + 1) ** 2 + 8 + 3
+            input_dim = feature_dim + appearance_dim
         else:
-            input_dim = 3 * (1 + 1) ** 2
+            input_dim = feature_dim
         self.rgb_decoder = torch.compile(
             RGBDecoderCNN(
                 input_dim,
@@ -185,7 +266,7 @@ class RGBDecoder(nn.Module):
         self.id_trans = {0: 0, 1: 1, 2: 2, 3: 3}
 
     def save_state_dict(self, is_final):
-        state_dict = dict()
+        state_dict = {}
         state_dict["params"] = self.state_dict()
         if not is_final:
             state_dict["optimizer"] = self.optimizer.state_dict()

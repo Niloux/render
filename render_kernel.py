@@ -122,7 +122,7 @@ def render_gaussian_splatting(
         colors = colors[..., :3]
     if colors.dim() != 3 or colors.shape[1] != 4 or colors.shape[2] != 3:
         raise ValueError(
-            f"CNN渲染分支期望colors形状为[N, 4, 3] (sh_degree=1)，实际为{tuple(colors.shape)}"
+            f"CNN渲染分支期望colors形状为[N, 4, 3] (sh_degree=1)，实际为{tuple(colors.shape)}"  # noqa: E501
         )
 
     # 投影
@@ -191,12 +191,14 @@ def render_gaussian_splatting(
         raise ValueError("启用CNN渲染分支时必须传入camera_ids")
     if len(camera_ids) != viewmats.shape[0]:
         raise ValueError(
-            f"camera_ids数量与viewmats不一致: camera_ids={len(camera_ids)} viewmats={viewmats.shape[0]}"
+            f"camera_ids数量与viewmats不一致: camera_ids={len(camera_ids)} viewmats={viewmats.shape[0]}"  # noqa: E501
         )
 
-    c2w = invert_world2camera(viewmats)
-    ray_dirs = get_ray_dirs_pinhole_batched(Ks, img_width, img_height, c2w)
-    features = torch.cat([render_colors, ray_dirs], dim=-1)  # [C, H, W, 12+3]
+    features = render_colors
+    if getattr(rgb_decoder, "use_ray_dirs", False):
+        c2w = invert_world2camera(viewmats)
+        ray_dirs = get_ray_dirs_pinhole_batched(Ks, img_width, img_height, c2w)
+        features = torch.cat([features, ray_dirs], dim=-1)
 
     decoded: List[torch.Tensor] = []
     for cam_idx, cam_id in enumerate(camera_ids):

@@ -47,15 +47,35 @@ class BenchmarkStats(TypedDict):
 # ================= 标准参数 =================
 
 STANDARD_EXTRINSICS: List[List[float]] = [
-    [-1.255400e-02, -8.349000e-03, 9.998860e-01, 1.973814e00],
-    [-9.999210e-01, 5.830000e-04, -1.254900e-02, -6.251000e-02],
-    [-4.780000e-04, -9.999650e-01, -8.355000e-03, 1.568425e00],
-    [0.0, 0.0, 0.0, 1.0],
+    [
+        -4.588266398430291063e-03,
+        -3.413667297520365119e-03,
+        9.999836472098125872e-01,
+        1.544154267170511075e00,
+    ],
+    [
+        -9.999632354307952387e-01,
+        -7.228375769820964344e-03,
+        -4.612848415714690224e-03,
+        -2.315740942895095494e-02,
+    ],
+    [
+        7.244004295493749329e-03,
+        -9.999680482191979358e-01,
+        -3.380376081852865672e-03,
+        2.115612062706179408e00,
+    ],
+    [
+        0.000000000000000000e00,
+        0.000000000000000000e00,
+        0.000000000000000000e00,
+        1.000000000000000000e00,
+    ],
 ]
 
 STANDARD_INTRINSICS: List[List[float]] = [
-    [1.12033333e03, 0.00000000e00, 1.59696198e03],
-    [0.00000000e00, 1.12033333e03, 9.05080973e02],
+    [2.084604312956008926e03, 0.00000000e00, 9.334067577078354816e02],
+    [0.00000000e00, 2.084604312956008926e03, 6.650223418347507049e02],
     [0.00000000e00, 0.00000000e00, 1.00000000e00],
 ]
 
@@ -123,10 +143,10 @@ def create_test_scenario(
 
     # 创建帧参数
     frame_params = FrameParams(
-        ego_trajectory=[72.516522, 0.648655, -0.685647],
-        ego_yaw=0.03355,
+        ego_trajectory=[8093.55, 4680.36, 48.68],
+        ego_yaw=0.0242,
         env_vehicles=vehicles,
-        timestamp=20250912,
+        timestamp=20260401,
     )
 
     return init_params, frame_params
@@ -222,7 +242,7 @@ def parse_args() -> Tuple[BenchmarkConfig, RenderConfig]:
     parser.add_argument(
         "--model-path",
         type=str,
-        default="/home/saimo/work/render/guangqi.pth",
+        default="/home/saimo/work/render/049_mcmc.pth",
         help="模型文件路径",
     )
     parser.add_argument("--warmup", type=int, default=1, help="预热帧数")
@@ -237,8 +257,8 @@ def parse_args() -> Tuple[BenchmarkConfig, RenderConfig]:
     # 场景配置
     parser.add_argument("--camera-count", type=int, default=1, help="相机数量")
     parser.add_argument("--lidar-count", type=int, default=1, help="激光雷达数量")
-    parser.add_argument("--width", type=int, default=3200, help="相机宽度")
-    parser.add_argument("--height", type=int, default=1224, help="相机高度")
+    parser.add_argument("--width", type=int, default=1920, help="相机宽度")
+    parser.add_argument("--height", type=int, default=1280, help="相机高度")
 
     args = parser.parse_args()
 

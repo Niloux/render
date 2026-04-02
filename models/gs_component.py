@@ -21,8 +21,8 @@ class GaussianComponent:
 
     name: str  # 组件名称
     xyz: torch.Tensor  # 位置 [N, 3]
-    feature_dc: torch.Tensor  # DC特征 [N, 1, 3]
-    feature_rest: torch.Tensor  # 其余特征 [N, K, 3]
+    feature_dc: torch.Tensor  # DC特征 [N, 1, C]
+    feature_rest: torch.Tensor  # 其余特征 [N, K, C]
     scaling: torch.Tensor  # 对数缩放 [N, 3]
     rotation: torch.Tensor  # 四元数旋转 [N, 4] (wxyz格式)
     opacity: torch.Tensor  # logit透明度 [N, 1]
@@ -52,36 +52,39 @@ class GaussianComponent:
 
     def validate(self) -> bool:
         """验证数据的一致性。"""
-        n = self.num_points
-
-        # 检查所有tensor的第一维是否一致
-        tensors = [
-            self.xyz,
-            self.feature_dc,
-            self.feature_rest,
-            self.scaling,
-            self.rotation,
-            self.opacity,
-        ]
-
-        for tensor in tensors:
-            if tensor.shape[0] != n:
-                return False
-
-        # 检查语义信息
-        if self.semantic is not None and self.semantic.shape[0] != n:
+        n = self.xyz.shape[0]
+        if not (
+            self.xyz.ndim == 2
+            and self.xyz.shape[1] == 3
+            and self.scaling.ndim == 2
+            and self.scaling.shape[1] == 3
+            and self.rotation.ndim == 2
+            and self.rotation.shape[1] == 4
+            and self.opacity.ndim == 2
+            and self.opacity.shape[1] == 1
+            and self.feature_dc.ndim == 3
+            and self.feature_dc.shape[1] == 1
+            and self.feature_rest.ndim == 3
+            and self.feature_dc.shape[2] >= 3
+            and self.feature_rest.shape[2] == self.feature_dc.shape[2]
+            and self.feature_dc.shape[1] + self.feature_rest.shape[1] == 4
+        ):
             return False
 
-        # 检查tensor维度
-        if (
-            self.xyz.shape[1] != 3
-            # TODO:这里的验证太傻逼了，球谐系数在不同的模型中维度不同
-            # TODO:可能需要通过读取配置文件来进行维度验证
-            or self.feature_dc.shape[1:] != (1, 3)
-            or self.feature_rest.shape[1:] != (3, 3)
-            or self.scaling.shape[1] != 3
-            or self.rotation.shape[1] != 4
-            or self.opacity.shape[1] != 1
+        if any(
+            t.shape[0] != n
+            for t in (
+                self.feature_dc,
+                self.feature_rest,
+                self.scaling,
+                self.rotation,
+                self.opacity,
+            )
+        ):
+            return False
+
+        if self.semantic is not None and (
+            self.semantic.ndim != 2 or self.semantic.shape[0] != n
         ):
             return False
 
@@ -222,6 +225,6 @@ class GaussianComponent:
         with torch.no_grad():
             return torch.sigmoid(self.opacity)
 
-    def get_colors(self) -> torch.Tensor:  # [N, 4, 3]
+    def get_colors(self) -> torch.Tensor:  # [N, 4, C]
         with torch.no_grad():
             return torch.cat((self.feature_dc, self.feature_rest), dim=1)

@@ -1,4 +1,4 @@
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import torch
 from gsplat.rendering import lidar_rasterization
@@ -64,6 +64,7 @@ class RenderManager:
         if not self.static_data:
             raise ValueError("静态点云组件不能为空")
         self.static_points = self.static_data.means.shape[0]
+        color_channels = self.static_data.colors.shape[2]
 
         # 预计算最大可能的动态点数（假设所有车辆类型同时出现）
         max_dynamic_points = sum(component.num_points for component in self.actors)
@@ -86,9 +87,10 @@ class RenderManager:
             "opacities": torch.empty(
                 (total_max_points, 1), device=device, dtype=torch.float32
             ),
-            # TODO:这里的颜色维度也需要根据模型来进行调整
             "colors": torch.empty(
-                (total_max_points, 4, 3), device=device, dtype=torch.float32
+                (total_max_points, 4, color_channels),
+                device=device,
+                dtype=torch.float32,
             ),
         }
 
@@ -152,68 +154,58 @@ class RenderManager:
         # 返回动态点数
         return start_idx - self.static_points
 
-    def init(self, params: InitParams) -> InitResp:
-        """初始化接口，输入相机的参数
+    def _group_cameras_by_resolution(
+        self, cameras: List[Camera]
+    ) -> Dict[Tuple[int, int], List[Camera]]:
+        grouped: Dict[Tuple[int, int], List[Camera]] = {}
+        for cam in cameras:
+            resolution = (cam.width, cam.height)
+            grouped.setdefault(resolution, []).append(cam)
+        return grouped
 
-        预计算所有相机数据，消除运行时查找和转换
-        """
-        # 渲染开关与模型路径
-        self.render_camera = bool(getattr(params, "render_camera", True))
-        self.render_lidar = bool(getattr(params, "render_lidar", False))
-        # 按照分辨率对输入camera进行分类
-        grouped = {}
-        for i in params.cameras:
-            resolution = (i.width, i.height)
-            if resolution not in grouped:
-                grouped[resolution] = []
-            grouped[resolution].append(i)
+    def _get_rgb_decoder_state_and_num_cams(
+        self, cameras: List[Camera]
+    ) -> Tuple[Optional[dict], int]:
         rgb_decoder_state = getattr(self.model, "rgb_decoder_state", None)
-        if rgb_decoder_state is not None and isinstance(rgb_decoder_state, dict):
-            params_state = rgb_decoder_state.get("params")
-            if (
-                isinstance(params_state, dict)
-                and "appearance_embedding" in params_state
-            ):
-                num_cams_ckpt = int(params_state["appearance_embedding"].shape[0])
-            else:
-                num_cams_ckpt = len(params.cameras)
-        else:
-            num_cams_ckpt = len(params.cameras)
+        if rgb_decoder_state is None or not isinstance(rgb_decoder_state, dict):
+            return None, len(cameras)
+        params_state = rgb_decoder_state.get("params")
+        if isinstance(params_state, dict) and "appearance_embedding" in params_state:
+            return rgb_decoder_state, int(params_state["appearance_embedding"].shape[0])
+        return rgb_decoder_state, len(cameras)
 
-        if len(params.cameras) > num_cams_ckpt:
-            raise ValueError(
-                f"相机数量超过rgb_decoder权重支持范围: cameras={len(params.cameras)} ckpt={num_cams_ckpt}"
-            )
-
-        self.cameras: Dict[Tuple[int, int], List[Camera]] = grouped
-        self.camera_id_to_index = {
-            cam.id: idx for idx, cam in enumerate(params.cameras)
-        }
-
-        self.rgb_decoder = RGBDecoder(
-            metadata={"num_cams": num_cams_ckpt},
-            device=self.device,
-            use_app_embed=True,
-            mode="image",
-        )
-        self.rgb_decoder.camera_id_map = self.camera_id_to_index
+    def _init_rgb_decoder(
+        self,
+        cameras: List[Camera],
+        num_cams_ckpt: int,
+        rgb_decoder_state: Optional[dict],
+    ) -> None:
+        self.camera_id_to_index = {cam.id: idx for idx, cam in enumerate(cameras)}
         if rgb_decoder_state is not None:
-            self.rgb_decoder.load_state_dict(rgb_decoder_state, strict=True)
+            self.rgb_decoder = RGBDecoder.from_checkpoint_state(
+                metadata={"num_cams": num_cams_ckpt},
+                state_dict=rgb_decoder_state,
+                device=self.device,
+                mode="image",
+            )
+        else:
+            self.rgb_decoder = RGBDecoder(
+                metadata={"num_cams": num_cams_ckpt},
+                device=self.device,
+                use_app_embed=True,
+                mode="image",
+            )
+        self.rgb_decoder.camera_id_map = self.camera_id_to_index
         self.rgb_decoder.eval()
 
-        # 计算所有相机的内参和外参tensor，消除运行时转换
+    def _build_camera_data(self) -> None:
         self.camera_data = {}
         for resolution, cameras in self.cameras.items():
             width, height = resolution
-
-            # 预计算内参tensor
             intrinsics_list = [cam.intrinsics for cam in cameras]
             Ks = torch.tensor(intrinsics_list, dtype=torch.float32, device=self.device)
-
-            # 预计算相机ID列表和外参列表
             camera_ids = [cam.id for cam in cameras]
             extrinsics_list = [cam.extrinsics for cam in cameras]
-
             self.camera_data[resolution] = {
                 "camera_ids": camera_ids,
                 "extrinsics_list": extrinsics_list,
@@ -222,64 +214,84 @@ class RenderManager:
                 "height": height,
             }
 
-        resp = InitResp(init_status=True)
+    def _build_lidar_data(self, lidars: Optional[List[Lidar]]) -> None:
+        if not lidars:
+            return
+        for lidar in lidars:
+            self.lidars[lidar.id] = lidar
+            point_cloud, azimuths, elevations = generate_point_cloud(
+                lidar.azimuth_resolution,
+                lidar.min_azimuth,
+                lidar.max_azimuth,
+                lidar.n_elevation_channels,
+                lidar.min_elevation,
+                lidar.max_elevation,
+                self.device,
+            )
 
-        # 预计算激光雷达相关数据
-        if params.lidars:
-            for lidar in params.lidars:
-                self.lidars[lidar.id] = lidar
-                point_cloud, azimuths, elevations = generate_point_cloud(
+            if self.model.raster_pts is not None:
+                print(f"raster_pts shape: {self.model.raster_pts.shape}")
+                raster_pts = self.model.raster_pts
+                tile_height = lidar.tile_height
+                elevation_boundaries = torch.cat([
+                    elevations[0:1] - 1.0,
+                    (
+                        elevations[tile_height::tile_height]
+                        + elevations[tile_height - 1 : -1 : tile_height]
+                    )
+                    / 2,
+                    elevations[-1:] + 1.0,
+                ])
+            else:
+                raster_pts, elevation_boundaries = build_raster_pts(
+                    point_cloud,
+                    azimuths,
+                    elevations,
                     lidar.azimuth_resolution,
                     lidar.min_azimuth,
-                    lidar.max_azimuth,
-                    lidar.n_elevation_channels,
-                    lidar.min_elevation,
-                    lidar.max_elevation,
-                    self.device,
+                    lidar.tile_width,
+                    lidar.tile_height,
                 )
 
-                if self.model.raster_pts is not None:
-                    print(f"raster_pts shape: {self.model.raster_pts.shape}")
-                    raster_pts = self.model.raster_pts
-                    # 计算elevation_boundaries, [n_elevation_channels//tile_height + 1]
-                    tile_height = lidar.tile_height
-                    elevation_boundaries = torch.cat([
-                        elevations[0:1] - 1.0,
-                        (
-                            elevations[tile_height::tile_height]
-                            + elevations[tile_height - 1 : -1 : tile_height]
-                        )
-                        / 2,
-                        elevations[-1:] + 1.0,
-                    ])
-                else:
-                    raster_pts, elevation_boundaries = build_raster_pts(
-                        point_cloud,
-                        azimuths,
-                        elevations,
-                        lidar.azimuth_resolution,
-                        lidar.min_azimuth,
-                        lidar.tile_width,
-                        lidar.tile_height,
-                    )
+            self.lidar_data[lidar.id] = {
+                "extrinsics": lidar.extrinsics,
+                "azimuths": azimuths,
+                "elevations": elevations,
+                "elevation_boundaries": elevation_boundaries,
+                "image_width": azimuths.shape[0],
+                "image_height": elevations.shape[0],
+                "tile_width": lidar.tile_width,
+                "tile_height": lidar.tile_height,
+                "min_azimuth": lidar.min_azimuth,
+                "max_azimuth": lidar.max_azimuth,
+                "min_elevation": lidar.min_elevation,
+                "max_elevation": lidar.max_elevation,
+                "azimuth_resolution": lidar.azimuth_resolution,
+                "raster_pts": raster_pts,
+            }
 
-                self.lidar_data[lidar.id] = {
-                    "extrinsics": lidar.extrinsics,
-                    "azimuths": azimuths,
-                    "elevations": elevations,
-                    "elevation_boundaries": elevation_boundaries,
-                    "image_width": azimuths.shape[0],
-                    "image_height": elevations.shape[0],
-                    "tile_width": lidar.tile_width,
-                    "tile_height": lidar.tile_height,
-                    "min_azimuth": lidar.min_azimuth,
-                    "max_azimuth": lidar.max_azimuth,
-                    "min_elevation": lidar.min_elevation,
-                    "max_elevation": lidar.max_elevation,
-                    "azimuth_resolution": lidar.azimuth_resolution,
-                    "raster_pts": raster_pts,
-                }
-        return resp
+    def init(self, params: InitParams) -> InitResp:
+        """初始化接口，输入相机的参数
+
+        预计算所有相机数据，消除运行时查找和转换
+        """
+        self.render_camera = bool(getattr(params, "render_camera", True))
+        self.render_lidar = bool(getattr(params, "render_lidar", False))
+        self.cameras = self._group_cameras_by_resolution(params.cameras)
+        rgb_decoder_state, num_cams_ckpt = self._get_rgb_decoder_state_and_num_cams(
+            params.cameras
+        )
+
+        if len(params.cameras) > num_cams_ckpt:
+            raise ValueError(
+                "相机数量超过rgb_decoder权重支持范围: "
+                f"cameras={len(params.cameras)} ckpt={num_cams_ckpt}"
+            )
+
+        self._init_rgb_decoder(params.cameras, num_cams_ckpt, rgb_decoder_state)
+        self._build_camera_data()
+        self._build_lidar_data(params.lidars)
+        return InitResp(init_status=True)
 
     def render_frame(self, params: FrameParams) -> FrameResp:
         """渲染接口，每帧调用"""

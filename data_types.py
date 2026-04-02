@@ -83,7 +83,7 @@ class GaussianData:
     quats: torch.Tensor  # [N, 4] 四元数
     scales: torch.Tensor  # [N, 3] 缩放
     opacities: torch.Tensor  # [N, 1] 透明度
-    colors: torch.Tensor  # [N, 4, 3] 颜色
+    colors: torch.Tensor  # [N, 4, C] 颜色
 
     def cat(self, other: Optional["GaussianData"]) -> "GaussianData":
         """连接两个高斯数据，消除重复的torch.cat调用"""
