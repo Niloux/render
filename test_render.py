@@ -11,7 +11,7 @@ from typing import List, Tuple, TypedDict
 import numpy as np
 import torch
 
-from data_types import Camera, Lidar
+from data_types import Camera, Lidar, Vehicle
 from render_manager import FrameParams, InitParams, RenderManager
 from util import save_colors_as_png
 
@@ -138,7 +138,7 @@ def create_test_scenario(
 
     # 创建测试车辆
     vehicles = [
-        # Vehicle([8235.21911375, 4684.84724959, 49.77610101], 0, "obj_015"),
+        Vehicle([8130.21911375, 4680.84724959, 49.77610101], 0, "obj_015"),
     ]
 
     # 创建帧参数

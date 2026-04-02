@@ -58,13 +58,16 @@ class RenderManager:
         预计算静态数据大小，为动态数据预留最大可能空间
         这样每帧只需要更新动态部分，零内存分配
         """
-        # 计算静态点云数据
-        static_components = [self.background, self.sky]
+        # 计算静态点云数据：训练时 sky 会单独渲染并用 alpha 合成，这里保持一致
+        static_components = [self.background]
         self.static_data = GaussianData.from_components(static_components)
         if not self.static_data:
             raise ValueError("静态点云组件不能为空")
         self.static_points = self.static_data.means.shape[0]
         color_channels = self.static_data.colors.shape[2]
+
+        self.sky_data = GaussianData.from_components([self.sky])
+        self.sky_points = self.sky_data.means.shape[0] if self.sky_data else 0
 
         # 预计算最大可能的动态点数（假设所有车辆类型同时出现）
         max_dynamic_points = sum(component.num_points for component in self.actors)
@@ -360,7 +363,7 @@ class RenderManager:
 
             viewmats = calculate_viewmats(extrinsics_list, ego_heading, ego_position)
 
-            # 渲染并收集结果
+            # 先渲染前景（background + actors，不包含 sky）
             batch_colors, batch_alphas = render(
                 render_means,
                 render_quats,
@@ -374,6 +377,24 @@ class RenderManager:
                 rgb_decoder=self.rgb_decoder,
                 camera_ids=camera_ids,
             )
+
+            # 再渲染 sky，并用前景 alpha 做合成：rgb = fg + sky * (1 - acc)
+            if self.sky_data is not None and self.sky_points > 0:
+                sky_colors, _sky_alphas = render(
+                    self.sky_data.means,
+                    self.sky_data.quats,
+                    self.sky_data.scales,
+                    self.sky_data.opacities,
+                    self.sky_data.colors,
+                    viewmats,
+                    Ks,
+                    width,
+                    height,
+                    rgb_decoder=self.rgb_decoder,
+                    camera_ids=camera_ids,
+                )
+                batch_colors = batch_colors + sky_colors * (1 - batch_alphas)
+
             batch_colors = (batch_colors.clamp(0, 1) * 255).to(torch.uint8)
             for cam_id, image in zip(camera_ids, batch_colors):
                 images[cam_id] = image
