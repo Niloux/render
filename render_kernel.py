@@ -224,7 +224,7 @@ def render_native(
     - 当 rgb_decoder 为 None：沿用 gsplat.rasterization 的 SH 渲染（sh_degree=1），直接输出 RGB。
     - 当 rgb_decoder 不为 None：使用 rasterization 的 N-D features 模式（sh_degree=None）先把每个高斯的特征
       光栅化到像素，再按 camera_ids 调用 rgb_decoder 得到最终 RGB。
-    """
+    """  # noqa: E501
     if opacities.dim() == 2 and opacities.shape[1] == 1:
         opacities = opacities.squeeze(1)
 
@@ -256,14 +256,14 @@ def render_native(
         colors = colors[..., :3]
     if colors.dim() != 3 or colors.shape[1] != 4 or colors.shape[2] != 3:
         raise ValueError(
-            f"CNN渲染分支期望colors形状为[N, 4, 3] (sh_degree=1)，实际为{tuple(colors.shape)}"
+            f"CNN渲染分支期望colors形状为[N, 4, 3] (sh_degree=1)，实际为{tuple(colors.shape)}"  # noqa: E501
         )
 
     if camera_ids is None:
         raise ValueError("启用CNN渲染分支时必须传入camera_ids")
     if len(camera_ids) != viewmats.shape[0]:
         raise ValueError(
-            f"camera_ids数量与viewmats不一致: camera_ids={len(camera_ids)} viewmats={viewmats.shape[0]}"
+            f"camera_ids数量与viewmats不一致: camera_ids={len(camera_ids)} viewmats={viewmats.shape[0]}"  # noqa: E501
         )
 
     per_gauss_feat = colors.contiguous().view(colors.shape[0], -1)

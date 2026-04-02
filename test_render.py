@@ -2,11 +2,12 @@
 """渲染性能测试脚本"""
 
 import argparse
+import json
 import os
 import statistics
 import time
 from pathlib import Path
-from typing import List, Tuple, TypedDict
+from typing import Any, List, Tuple, TypedDict
 
 import numpy as np
 import torch
@@ -29,6 +30,7 @@ class BenchmarkConfig(TypedDict):
     benchmark_frames: int
     save_first_frame: bool
     output_dir: str
+    cameras_json: str
     camera_count: int
     resolution: Tuple[int, int]
     lidar_count: int
@@ -82,6 +84,68 @@ STANDARD_INTRINSICS: List[List[float]] = [
 # ================= 辅助函数 =================
 
 
+def _validate_matrix(mat: Any, rows: int, cols: int, name: str) -> List[List[float]]:
+    """校验并规范化矩阵输入，确保为给定 rows x cols 的二维列表。"""
+    if not isinstance(mat, list) or len(mat) != rows:
+        raise ValueError(
+            f"{name}期望为{rows}x{cols}二维列表，实际行数为{getattr(mat, '__len__', lambda: 'N/A')()}"  # noqa: E501
+        )
+    out: List[List[float]] = []
+    for r in range(rows):
+        row = mat[r]
+        if not isinstance(row, list) or len(row) != cols:
+            raise ValueError(
+                f"{name}第{r}行期望长度为{cols}，实际为{getattr(row, '__len__', lambda: 'N/A')()}"  # noqa: E501
+            )
+        out.append([float(x) for x in row])
+    return out
+
+
+def load_cameras_from_json(
+    path: str, default_width: int, default_height: int
+) -> List[Camera]:
+    """从 JSON 文件加载相机配置。
+
+    JSON 支持两种格式：
+    1) {"cameras": [ {..camera spec..}, ... ]}
+    2) [ {..camera spec..}, ... ]
+
+    camera spec 支持字段：
+    - id: str
+    - extrinsics: 4x4 list[list[float]]，默认使用 STANDARD_EXTRINSICS
+    - intrinsics: 3x3 list[list[float]]，默认使用 STANDARD_INTRINSICS
+    - width/height: int，默认使用命令行 --width/--height
+    """
+    with open(path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+
+    specs: Any
+    if isinstance(data, dict) and "cameras" in data:
+        specs = data["cameras"]
+    else:
+        specs = data
+
+    if not isinstance(specs, list):
+        raise ValueError("cameras_json 内容必须是列表，或包含 cameras 列表的字典")
+
+    cameras: List[Camera] = []
+    for idx, spec in enumerate(specs):
+        if not isinstance(spec, dict):
+            raise ValueError(f"camera spec 必须是对象(dict)，实际为{type(spec)}")
+        cam_id = str(spec.get("id", f"camera{idx + 1}"))
+        extr = _validate_matrix(
+            spec.get("extrinsics", STANDARD_EXTRINSICS), 4, 4, f"{cam_id}.extrinsics"
+        )
+        intr = _validate_matrix(
+            spec.get("intrinsics", STANDARD_INTRINSICS), 3, 3, f"{cam_id}.intrinsics"
+        )
+        width = int(spec.get("width", default_width))
+        height = int(spec.get("height", default_height))
+        cameras.append(Camera(cam_id, extr, intr, width, height))
+
+    return cameras
+
+
 def create_test_cameras(count: int, width: int, height: int) -> List[Camera]:
     """创建测试相机列表"""
     return [
@@ -121,9 +185,16 @@ def create_test_scenario(
     """创建标准测试场景"""
     cameras: List[Camera] = []
     if render_config["render_camera"]:
-        cameras = create_test_cameras(
-            config["camera_count"], config["resolution"][0], config["resolution"][1]
-        )
+        if config.get("cameras_json"):
+            cameras = load_cameras_from_json(
+                config["cameras_json"],
+                default_width=config["resolution"][0],
+                default_height=config["resolution"][1],
+            )
+        else:
+            cameras = create_test_cameras(
+                config["camera_count"], config["resolution"][0], config["resolution"][1]
+            )
 
     lidars: List[Lidar] = []
     if render_config["render_lidar"]:
@@ -255,7 +326,13 @@ def parse_args() -> Tuple[BenchmarkConfig, RenderConfig]:
     parser.add_argument("--no-lidar", action="store_true", help="禁用激光雷达渲染")
 
     # 场景配置
-    parser.add_argument("--camera-count", type=int, default=2, help="相机数量")
+    parser.add_argument(
+        "--cameras-json",
+        type=str,
+        default="",
+        help="相机配置JSON文件路径（支持多个不同内外参/分辨率）。提供该参数时将忽略 --camera-count 的生成逻辑",  # noqa: E501
+    )
+    parser.add_argument("--camera-count", type=int, default=1, help="相机数量")
     parser.add_argument("--lidar-count", type=int, default=1, help="激光雷达数量")
     parser.add_argument("--width", type=int, default=1920, help="相机宽度")
     parser.add_argument("--height", type=int, default=1280, help="相机高度")
@@ -274,6 +351,7 @@ def parse_args() -> Tuple[BenchmarkConfig, RenderConfig]:
         "benchmark_frames": args.frames,
         "save_first_frame": not args.no_save,
         "output_dir": args.output_dir,
+        "cameras_json": args.cameras_json,
         "camera_count": args.camera_count,
         "resolution": (args.width, args.height),
         "lidar_count": args.lidar_count,
@@ -307,7 +385,16 @@ def main() -> None:
 
         print("渲染器初始化成功")
         if render_config["render_camera"]:
-            print(f"- 相机: {config['camera_count']}个, 分辨率 {config['resolution']}")
+            if config.get("cameras_json"):
+                print(
+                    f"- 相机: {len(init_params.cameras)}个 (from {config['cameras_json']})"  # noqa: E501
+                )
+                for cam in init_params.cameras:
+                    print(f"  - {cam.id}: {cam.width}x{cam.height}")
+            else:
+                print(
+                    f"- 相机: {config['camera_count']}个, 分辨率 {config['resolution']}"
+                )
         if render_config["render_lidar"]:
             print(f"- 激光雷达: {config['lidar_count']}个")
 
