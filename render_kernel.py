@@ -2,12 +2,6 @@ import math
 from typing import List, Optional, Sequence
 
 import torch
-from gsplat.cuda._wrapper import (
-    map_points_to_lidar_tiles,
-    points_mapping_offset_encode,
-    populate_image_from_points,
-)
-
 from gsplat import (
     fully_fused_projection,
     isect_offset_encode,
@@ -15,8 +9,13 @@ from gsplat import (
     rasterization,
     rasterize_to_pixels,
 )
+from gsplat.cuda._wrapper import (
+    map_points_to_lidar_tiles,
+    points_mapping_offset_encode,
+    populate_image_from_points,
+)
 
-NATIVE = False
+NATIVE = True
 
 
 def extract_camera_centers(viewmats: torch.Tensor):
@@ -208,42 +207,97 @@ def render_gaussian_splatting(
 
 
 def render_native(
-    means, quats, scales, opacities, colors, viewmats, Ks, img_width, img_height
+    means,
+    quats,
+    scales,
+    opacities,
+    colors,
+    viewmats,
+    Ks,
+    img_width,
+    img_height,
+    rgb_decoder=None,
+    camera_ids: Optional[Sequence[str]] = None,
 ):
-    """原生的渲染方法，使用rasterization函数的内置球谐函数处理"""
-    # gsplat库期望opacities形状为[N,]，而不是[N,1]
+    """原生渲染接口。
+
+    - 当 rgb_decoder 为 None：沿用 gsplat.rasterization 的 SH 渲染（sh_degree=1），直接输出 RGB。
+    - 当 rgb_decoder 不为 None：使用 rasterization 的 N-D features 模式（sh_degree=None）先把每个高斯的特征
+      光栅化到像素，再按 camera_ids 调用 rgb_decoder 得到最终 RGB。
+    """
     if opacities.dim() == 2 and opacities.shape[1] == 1:
         opacities = opacities.squeeze(1)
 
-    # 使用rasterization函数的内置球谐函数处理
-    # colors保持[N, 4, 3]形状，设置sh_degree=1让rasterization内部处理球谐函数
-    # TODO:colors应该在前期做好camera和lidar的分离，后面再优化吧
-    if colors.dim() == 3 and colors.shape[1] == 4 and colors.shape[2] == 5:
-        colors = colors[..., :3]
+    if rgb_decoder is None:
+        if colors.dim() == 3 and colors.shape[1] == 4 and colors.shape[2] == 5:
+            colors = colors[..., :3]
 
-    render_colors, render_alphas, _ = rasterization(
+        render_colors, render_alphas, _ = rasterization(
+            means=means,
+            quats=quats,
+            scales=scales,
+            opacities=opacities,
+            colors=colors,
+            viewmats=viewmats,
+            Ks=Ks,
+            width=img_width,
+            height=img_height,
+            near_plane=0.001,
+            far_plane=1000,
+            sh_degree=1,
+            packed=True,
+            tile_size=16,
+            radius_clip=3.0,
+            rasterize_mode="antialiased",
+        )
+        return render_colors, render_alphas
+
+    if colors.dim() == 3 and colors.shape[1] == 4 and colors.shape[2] >= 3:
+        colors = colors[..., :3]
+    if colors.dim() != 3 or colors.shape[1] != 4 or colors.shape[2] != 3:
+        raise ValueError(
+            f"CNN渲染分支期望colors形状为[N, 4, 3] (sh_degree=1)，实际为{tuple(colors.shape)}"
+        )
+
+    if camera_ids is None:
+        raise ValueError("启用CNN渲染分支时必须传入camera_ids")
+    if len(camera_ids) != viewmats.shape[0]:
+        raise ValueError(
+            f"camera_ids数量与viewmats不一致: camera_ids={len(camera_ids)} viewmats={viewmats.shape[0]}"
+        )
+
+    per_gauss_feat = colors.contiguous().view(colors.shape[0], -1)
+
+    render_feats, render_alphas, _ = rasterization(
         means=means,
         quats=quats,
         scales=scales,
         opacities=opacities,
-        colors=colors,
+        colors=per_gauss_feat,
         viewmats=viewmats,
         Ks=Ks,
         width=img_width,
         height=img_height,
         near_plane=0.001,
         far_plane=1000,
-        sh_degree=1,
+        sh_degree=None,
         packed=True,
         tile_size=16,
         radius_clip=3.0,
-        rasterize_mode="antialiased",  # 启用抗锯齿模式
-        # # 多GPU并行
-        # distributed=True,
-        # absgrad=False,
-        # velocities=None,
+        rasterize_mode="antialiased",
     )
-    return render_colors, render_alphas
+
+    features = render_feats
+    if getattr(rgb_decoder, "use_ray_dirs", False):
+        c2w = invert_world2camera(viewmats)
+        ray_dirs = get_ray_dirs_pinhole_batched(Ks, img_width, img_height, c2w)
+        features = torch.cat([features, ray_dirs], dim=-1)
+
+    decoded: List[torch.Tensor] = []
+    for cam_idx, cam_id in enumerate(camera_ids):
+        decoded.append(rgb_decoder(cam_id, features[cam_idx]))
+    rendered_rgb = torch.stack(decoded, dim=0)
+    return rendered_rgb, render_alphas
 
 
 def render(
@@ -261,7 +315,17 @@ def render(
 ):
     if NATIVE:
         return render_native(
-            means, quats, scales, opacities, colors, viewmats, Ks, img_width, img_height
+            means,
+            quats,
+            scales,
+            opacities,
+            colors,
+            viewmats,
+            Ks,
+            img_width,
+            img_height,
+            rgb_decoder=rgb_decoder,
+            camera_ids=camera_ids,
         )
     else:
         return render_gaussian_splatting(

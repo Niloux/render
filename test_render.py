@@ -255,7 +255,7 @@ def parse_args() -> Tuple[BenchmarkConfig, RenderConfig]:
     parser.add_argument("--no-lidar", action="store_true", help="禁用激光雷达渲染")
 
     # 场景配置
-    parser.add_argument("--camera-count", type=int, default=1, help="相机数量")
+    parser.add_argument("--camera-count", type=int, default=2, help="相机数量")
     parser.add_argument("--lidar-count", type=int, default=1, help="激光雷达数量")
     parser.add_argument("--width", type=int, default=1920, help="相机宽度")
     parser.add_argument("--height", type=int, default=1280, help="相机高度")
