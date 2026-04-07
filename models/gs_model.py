@@ -139,6 +139,10 @@ class GSModel:
             "sphere_center": self.sky_center,
             "sphere_radius": self.sky_radius,
         }
+        if self.raster_pts is not None:
+            checkpoint["raster_pts"] = self.raster_pts
+        if self.rgb_decoder_state is not None:
+            checkpoint["rgb_decoder"] = self.rgb_decoder_state
 
         for name, component in self.components.items():
             data = {

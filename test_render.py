@@ -81,6 +81,13 @@ STANDARD_INTRINSICS: List[List[float]] = [
     [0.00000000e00, 0.00000000e00, 1.00000000e00],
 ]
 
+LIDAR_EXTRINSICS: List[List[float]] = [
+    [-0.852646995188958, -0.522486863163586, 0.000761194269898, 1.430000000000000],
+    [0.522487398378445, -0.852645663278401, 0.001513746431570, 0.000000000000000],
+    [-0.000141883631515, 0.001688405760096, 0.999998564576482, 2.184000000000000],
+    [0, 0, 0, 1],
+]
+
 # ================= 辅助函数 =================
 
 
@@ -165,7 +172,7 @@ def create_test_lidars(count: int) -> List[Lidar]:
     return [
         Lidar(
             f"lidar{i + 1}",
-            STANDARD_EXTRINSICS,
+            LIDAR_EXTRINSICS,
             azimuth_resolution=0.140625,
             min_azimuth=-180.0,
             max_azimuth=180.0,
