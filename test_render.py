@@ -108,6 +108,59 @@ def _validate_matrix(mat: Any, rows: int, cols: int, name: str) -> List[List[flo
     return out
 
 
+def save_point_cloud_as_ply(save_path: str, point_cloud: torch.Tensor | np.ndarray) -> None:  # noqa: E501
+    if isinstance(point_cloud, torch.Tensor):
+        points = point_cloud.detach().cpu().numpy()
+    else:
+        points = np.asarray(point_cloud)
+
+    if points.ndim != 2 or points.shape[1] not in (3, 4):
+        raise ValueError(f"point_cloud 期望形状为 [N,3] 或 [N,4]，实际为 {points.shape}")  # noqa: E501
+
+    points = points.astype(np.float32, copy=False)
+    finite_mask = np.isfinite(points).all(axis=1)
+    points = points[finite_mask]
+
+    has_intensity = points.shape[1] == 4
+    if has_intensity:
+        dtype = np.dtype([("x", "<f4"), ("y", "<f4"), ("z", "<f4"), ("intensity", "<f4")])  # noqa: E501
+        packed = np.empty(points.shape[0], dtype=dtype)
+        packed["x"] = points[:, 0]
+        packed["y"] = points[:, 1]
+        packed["z"] = points[:, 2]
+        packed["intensity"] = points[:, 3]
+        properties = (
+            "property float x\n"
+            "property float y\n"
+            "property float z\n"
+            "property float intensity\n"
+        )
+    else:
+        dtype = np.dtype([("x", "<f4"), ("y", "<f4"), ("z", "<f4")])
+        packed = np.empty(points.shape[0], dtype=dtype)
+        packed["x"] = points[:, 0]
+        packed["y"] = points[:, 1]
+        packed["z"] = points[:, 2]
+        properties = (
+            "property float x\n"
+            "property float y\n"
+            "property float z\n"
+        )
+
+    header = (
+        "ply\n"
+        "format binary_little_endian 1.0\n"
+        f"element vertex {packed.shape[0]}\n"
+        f"{properties}"
+        "end_header\n"
+    ).encode("ascii")
+
+    os.makedirs(os.path.dirname(save_path) or ".", exist_ok=True)
+    with open(save_path, "wb") as f:
+        f.write(header)
+        f.write(packed.tobytes())
+
+
 def load_cameras_from_json(
     path: str, default_width: int, default_height: int
 ) -> List[Camera]:
@@ -273,8 +326,8 @@ def run_benchmark(  # noqa: C901
             if render_config["render_lidar"] and frame_resp.lidars:
                 print(f"正在保存激光雷达点云到 {config['output_dir']}...")
                 for lidar_id, lidar_data in frame_resp.lidars.items():
-                    save_path = os.path.join(config["output_dir"], f"{lidar_id}.npy")
-                    np.save(save_path, lidar_data.cpu().numpy())
+                    save_path = os.path.join(config["output_dir"], f"{lidar_id}.ply")
+                    save_point_cloud_as_ply(save_path, lidar_data)
 
             print("第一帧结果处理完成")
 
