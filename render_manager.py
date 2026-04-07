@@ -217,35 +217,89 @@ class RenderManager:
                 "height": height,
             }
 
+    def _prepare_lidar_grids_from_raster_pts(
+        self, raster_pts: torch.Tensor, tile_height: int
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """从 checkpoint 保存的 raster_pts 推断 azimuths/elevations 与 elevation_boundaries。
+
+        返回:
+            raster_pts_4d: [1, H, W, D] 的 raster_pts
+            azimuths: [A] 方位角序列（单位：度）
+            elevations: [E] 俯仰角序列（单位：度）
+            elevation_boundaries: [E//tile_height + 1] 用于瓦片划分的边界
+        """
+        if not isinstance(raster_pts, torch.Tensor):
+            raster_pts = torch.as_tensor(raster_pts)
+        raster_pts = raster_pts.to(device=self.device, dtype=torch.float32)
+        if raster_pts.dim() == 3:
+            raster_pts = raster_pts.unsqueeze(0)
+        if raster_pts.dim() != 4:
+            raise ValueError(f"raster_pts维度必须为3或4，实际为{tuple(raster_pts.shape)}")
+
+        az_grid = raster_pts[0, ..., 0]
+        el_grid = raster_pts[0, ..., 1]
+
+        az_var0 = az_grid[:, 0].std()
+        az_var1 = az_grid[0, :].std()
+        az_axis = 0 if az_var0 >= az_var1 else 1
+
+        el_var0 = el_grid[:, 0].std()
+        el_var1 = el_grid[0, :].std()
+        el_axis = 0 if el_var0 >= el_var1 else 1
+        if el_axis == az_axis:
+            el_axis = 1 - az_axis
+
+        azimuths = az_grid[:, 0] if az_axis == 0 else az_grid[0, :]
+        elevations = el_grid[:, 0] if el_axis == 0 else el_grid[0, :]
+
+        elevation_boundaries = torch.cat(
+            [
+                elevations[0:1] - 1.0,
+                (elevations[tile_height::tile_height] + elevations[tile_height - 1 : -1 : tile_height])
+                / 2,
+                elevations[-1:] + 1.0,
+            ]
+        )
+
+        return raster_pts, azimuths, elevations, elevation_boundaries
+
     def _build_lidar_data(self, lidars: Optional[List[Lidar]]) -> None:
         if not lidars:
             return
+
         for lidar in lidars:
             self.lidars[lidar.id] = lidar
-            point_cloud, azimuths, elevations = generate_point_cloud(
-                lidar.azimuth_resolution,
-                lidar.min_azimuth,
-                lidar.max_azimuth,
-                lidar.n_elevation_channels,
-                lidar.min_elevation,
-                lidar.max_elevation,
-                self.device,
-            )
 
             if self.model.raster_pts is not None:
-                print(f"raster_pts shape: {self.model.raster_pts.shape}")
-                raster_pts = self.model.raster_pts
-                tile_height = lidar.tile_height
-                elevation_boundaries = torch.cat([
-                    elevations[0:1] - 1.0,
-                    (
-                        elevations[tile_height::tile_height]
-                        + elevations[tile_height - 1 : -1 : tile_height]
+                raster_pts, azimuths, elevations, elevation_boundaries = (
+                    self._prepare_lidar_grids_from_raster_pts(
+                        self.model.raster_pts, tile_height=lidar.tile_height
                     )
-                    / 2,
-                    elevations[-1:] + 1.0,
-                ])
+                )
+
+                if azimuths.numel() > 1:
+                    azimuth_resolution = torch.diff(azimuths).abs().median().item()
+                else:
+                    azimuth_resolution = float(lidar.azimuth_resolution)
+
+                min_azimuth = float(azimuths.min().item())
+                max_azimuth = float(azimuths.max().item())
+                min_elevation = float(elevations.min().item())
+                max_elevation = float(elevations.max().item())
+
+                image_width = int(raster_pts.shape[1])
+                image_height = int(raster_pts.shape[2])
+
             else:
+                point_cloud, azimuths, elevations = generate_point_cloud(
+                    lidar.azimuth_resolution,
+                    lidar.min_azimuth,
+                    lidar.max_azimuth,
+                    lidar.n_elevation_channels,
+                    lidar.min_elevation,
+                    lidar.max_elevation,
+                    self.device,
+                )
                 raster_pts, elevation_boundaries = build_raster_pts(
                     point_cloud,
                     azimuths,
@@ -256,20 +310,28 @@ class RenderManager:
                     lidar.tile_height,
                 )
 
+                azimuth_resolution = float(lidar.azimuth_resolution)
+                min_azimuth = float(lidar.min_azimuth)
+                max_azimuth = float(lidar.max_azimuth)
+                min_elevation = float(lidar.min_elevation)
+                max_elevation = float(lidar.max_elevation)
+                image_width = int(azimuths.shape[0])
+                image_height = int(elevations.shape[0])
+
             self.lidar_data[lidar.id] = {
                 "extrinsics": lidar.extrinsics,
                 "azimuths": azimuths,
                 "elevations": elevations,
                 "elevation_boundaries": elevation_boundaries,
-                "image_width": azimuths.shape[0],
-                "image_height": elevations.shape[0],
+                "image_width": image_width,
+                "image_height": image_height,
                 "tile_width": lidar.tile_width,
                 "tile_height": lidar.tile_height,
-                "min_azimuth": lidar.min_azimuth,
-                "max_azimuth": lidar.max_azimuth,
-                "min_elevation": lidar.min_elevation,
-                "max_elevation": lidar.max_elevation,
-                "azimuth_resolution": lidar.azimuth_resolution,
+                "min_azimuth": min_azimuth,
+                "max_azimuth": max_azimuth,
+                "min_elevation": min_elevation,
+                "max_elevation": max_elevation,
+                "azimuth_resolution": azimuth_resolution,
                 "raster_pts": raster_pts,
             }
 

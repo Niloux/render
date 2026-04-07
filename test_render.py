@@ -341,8 +341,8 @@ def parse_args() -> Tuple[BenchmarkConfig, RenderConfig]:
 
     render_config: RenderConfig = {
         "render_camera": not args.no_camera,
-        # "render_lidar": not args.no_lidar,
-        "render_lidar": False,
+        "render_lidar": not args.no_lidar,
+        # "render_lidar": False,
     }
 
     benchmark_config: BenchmarkConfig = {
