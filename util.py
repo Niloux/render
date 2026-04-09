@@ -162,7 +162,7 @@ def pano_to_lidar_with_intensities(raster_pts, out):
     # print(gt_point_cloud.shape, pred_point_cloud.shape)
 
     # 合并掩码
-    # valid_mask =  depth_valid_mask * ray_drop_mask
+    # valid_mask = depth_valid_mask * ray_drop_mask
     valid_mask = depth_valid_mask
 
     # 应用掩码过滤无效点
