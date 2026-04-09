@@ -14,6 +14,7 @@ from data_types import (
     Lidar,
     Vehicle,
 )
+from mlp_decoder import MLPDecoder
 from models import GaussianComponent, GSModel
 from render_kernel import (
     extract_camera_centers,
@@ -48,7 +49,9 @@ class RenderManager:
         self.render_camera: bool = True
         self.render_lidar: bool = False
         self.rgb_decoder: RGBDecoder | None = None
+        self.mlp_decoder: MLPDecoder | None = None
         self.camera_id_to_index: Dict[str, int] = {}
+        self.lidar_id_to_index: Dict[str, int] = {}
 
     def _setup_render_buffers(self) -> None:
         """预分配渲染buffers，消除每帧内存分配
@@ -267,6 +270,63 @@ class RenderManager:
 
         return raster_pts, azimuths, elevations, elevation_boundaries
 
+    def _load_checkpoint_dict(self) -> dict:
+        """加载原始checkpoint字典，用于提取高斯组件之外的子模块权重。"""
+        return torch.load(self.model_path, map_location="cpu", weights_only=False)
+
+    def _get_mlp_decoder_state_and_num_lidars(
+        self, lidars: Optional[List[Lidar]]
+    ) -> Tuple[Optional[dict], int]:
+        """从checkpoint解析MLPDecoder权重以及其支持的lidar数量。"""
+        if not lidars:
+            return None, 0
+
+        ckpt = self._load_checkpoint_dict()
+        state = None
+        for key in ("MLPDecoder", "mlp_decoder", "lidar_decoder"):
+            value = ckpt.get(key, None) if isinstance(ckpt, dict) else None
+            if isinstance(value, dict):
+                state = value
+                break
+
+        if state is None:
+            return None, len(lidars)
+
+        params_state = state.get("params") if isinstance(state, dict) else None
+        if isinstance(params_state, dict) and "appearance_dim" in params_state:
+            app = params_state["appearance_dim"]
+            if isinstance(app, torch.Tensor) and app.ndim == 2:
+                return state, int(app.shape[0])
+        return state, len(lidars)
+
+    def _init_mlp_decoder(self, lidars: Optional[List[Lidar]]) -> None:
+        """初始化激光雷达的MLP解码器（可选）。"""
+        if not self.render_lidar or not lidars:
+            self.mlp_decoder = None
+            self.lidar_id_to_index = {}
+            return
+
+        self.lidar_id_to_index = {lidar.id: idx for idx, lidar in enumerate(lidars)}
+        mlp_state, num_lidars_ckpt = self._get_mlp_decoder_state_and_num_lidars(lidars)
+
+        if mlp_state is None:
+            self.mlp_decoder = None
+            return
+
+        if len(lidars) > num_lidars_ckpt:
+            raise ValueError(
+                "激光雷达数量超过MLPDecoder权重支持范围: "
+                f"lidars={len(lidars)} ckpt={num_lidars_ckpt}"
+            )
+
+        self.mlp_decoder = MLPDecoder.from_checkpoint_state(
+            metadata={"num_lidars": num_lidars_ckpt},
+            state_dict=mlp_state,
+            device=self.device,
+        )
+        self.mlp_decoder.lidar_id_map = self.lidar_id_to_index
+        self.mlp_decoder.eval()
+
     def _build_lidar_data(self, lidars: Optional[List[Lidar]]) -> None:
         if not lidars:
             return
@@ -336,6 +396,7 @@ class RenderManager:
         self._init_rgb_decoder(params.cameras, num_cams_ckpt, rgb_decoder_state)
         self._build_camera_data()
         self._build_lidar_data(params.lidars)
+        self._init_mlp_decoder(params.lidars)
         return InitResp(init_status=True)
 
     def render_frame(self, params: FrameParams) -> FrameResp:
@@ -465,9 +526,16 @@ class RenderManager:
             viewmats = calculate_viewmats(
                 [lidar_cfg["extrinsics"]], ego_heading, ego_position
             )
-            lidar_features = self._compute_lidar_features_from_colors(
-                render_colors, render_means, viewmats
-            )
+            if self.mlp_decoder is not None:
+                lidar_features = self._compute_lidar_mlp_features_from_colors(
+                    render_colors,
+                    feature_dim=self.mlp_decoder.feature_dim,
+                    batch_size=viewmats.shape[0],
+                )
+            else:
+                lidar_features = self._compute_lidar_features_from_colors(
+                    render_colors, render_means, viewmats
+                )
             raster_pts = lidar_cfg["raster_pts"]
 
             near_plane = 0.2
@@ -518,12 +586,28 @@ class RenderManager:
                 )
             )
 
-            # 后处理：Mask处理与深度滤波
-            out = self._process_lidar_output(raster_pts, rendered_feat)
+            if self.mlp_decoder is not None:
+                decoded_intensity, decoded_ray_drop_logits = self.mlp_decoder(
+                    lidar_id,
+                    rendered_feat[..., :-1],
+                    raster_pts,
+                    viewmats,
+                )
+                decoded_rendered = torch.cat(
+                    [
+                        decoded_intensity,
+                        decoded_ray_drop_logits,
+                        rendered_feat[..., -1:],
+                    ],
+                    dim=-1,
+                )
+                out = self._process_lidar_output(raster_pts, decoded_rendered)
+            else:
+                out = self._process_lidar_output(raster_pts, rendered_feat)
 
             from util import pano_to_lidar_with_intensities
 
-            pred, gt = pano_to_lidar_with_intensities(raster_pts, out)
+            pred = pano_to_lidar_with_intensities(raster_pts, out)
             lidars[lidar_id] = pred
 
         return lidars
@@ -647,3 +731,49 @@ class RenderManager:
 
         feats = spherical_harmonics(1, dirs, shs)  # [C, N, 3]
         return feats[..., :2]
+
+    def _compute_lidar_mlp_features_from_colors(
+        self,
+        colors: torch.Tensor,
+        feature_dim: int,
+        batch_size: int = 1,
+    ) -> torch.Tensor:
+        """从高斯的colors中构建供MLPDecoder使用的lidar_features。
+
+        约定：
+        - colors 形状为 [N, 4, C]，其中 C 的前3个通道为相机渲染(RGB)；从第3个通道开始视为额外特征。
+        - 将额外特征在 [K=4] 维度上展平为每个高斯的 1D feature 向量，并裁剪/补零到 feature_dim。
+
+        Args:
+            colors: [N, 4, C] 的特征张量。
+            feature_dim: 目标特征维度（与MLPDecoder期望一致）。
+            batch_size: 输出批大小，通常等于 viewmats.shape[0]。
+
+        Returns:
+            lidar_features: [batch_size, N, feature_dim]
+        """  # noqa: E501
+        if feature_dim <= 0:
+            raise ValueError(f"feature_dim必须为正数，实际为{feature_dim}")
+
+        device = colors.device
+        dtype = colors.dtype
+        if colors.dim() != 3:
+            N = int(colors.shape[0]) if hasattr(colors, "shape") else 0
+            return torch.zeros(batch_size, N, feature_dim, device=device, dtype=dtype)
+
+        N = colors.shape[0]
+        C = colors.shape[-1]
+        if C <= 3:
+            return torch.zeros(batch_size, N, feature_dim, device=device, dtype=dtype)
+
+        extra = colors[..., 3:]  # [N, 4, C-3]
+        flat = extra.reshape(N, -1)  # [N, 4*(C-3)]
+
+        if flat.shape[1] < feature_dim:
+            pad = torch.zeros(
+                N, feature_dim - flat.shape[1], device=device, dtype=dtype
+            )
+            flat = torch.cat([flat, pad], dim=-1)
+        feat = flat[:, :feature_dim]
+
+        return feat.unsqueeze(0).expand(batch_size, -1, -1).contiguous()
