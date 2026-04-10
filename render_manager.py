@@ -1,3 +1,4 @@
+import math
 from typing import Dict, List, Optional, Tuple
 
 import torch
@@ -18,10 +19,11 @@ from mlp_decoder import MLPDecoder
 from models import GaussianComponent, GSModel
 from render_kernel import (
     extract_camera_centers,
+    get_ray_dirs_cam_pinhole_batched,
+    invert_world2camera,
     render,
 )
 from rgb_decoder import RGBDecoder
-from util import calculate_viewmats
 
 
 class RenderManager:
@@ -213,12 +215,17 @@ class RenderManager:
             Ks = torch.tensor(intrinsics_list, dtype=torch.float32, device=self.device)
             camera_ids = [cam.id for cam in cameras]
             extrinsics_list = [cam.extrinsics for cam in cameras]
+            extrinsics_tensor = torch.tensor(
+                extrinsics_list, dtype=torch.float32, device=self.device
+            )
+            ray_dirs_cam = get_ray_dirs_cam_pinhole_batched(Ks, width, height)
             self.camera_data[resolution] = {
                 "camera_ids": camera_ids,
-                "extrinsics_list": extrinsics_list,
+                "extrinsics_tensor": extrinsics_tensor,
                 "intrinsics_tensor": Ks,
                 "width": width,
                 "height": height,
+                "ray_dirs_cam": ray_dirs_cam,
             }
 
     def _prepare_lidar_grids_from_raster_pts(
@@ -358,8 +365,32 @@ class RenderManager:
             image_width = int(raster_pts.shape[1])
             image_height = int(raster_pts.shape[2])
 
+            angles = torch.deg2rad(raster_pts[..., :2])
+            az = angles[..., 0:1]
+            el = angles[..., 1:2]
+            ray_dirs_lidar = torch.cat(
+                [
+                    torch.cos(az) * torch.cos(el),
+                    torch.sin(az) * torch.cos(el),
+                    torch.sin(el),
+                ],
+                dim=-1,
+            )
+            ray_dirs_lidar = ray_dirs_lidar / (
+                ray_dirs_lidar.norm(dim=-1, keepdim=True) + 1e-8
+            )
+
+            gt_depth = raster_pts[..., 2].squeeze(0)
+            did_return_threshold = 1000.0
+            gt_did_return = gt_depth <= did_return_threshold
+            depth_valid_mask = (gt_depth > 0) & gt_did_return
+
+            extrinsics_tensor = torch.tensor(
+                [lidar.extrinsics], dtype=torch.float32, device=self.device
+            )
+
             self.lidar_data[lidar.id] = {
-                "extrinsics": lidar.extrinsics,
+                "extrinsics_tensor": extrinsics_tensor,
                 "azimuths": azimuths,
                 "elevations": elevations,
                 "elevation_boundaries": elevation_boundaries,
@@ -373,6 +404,9 @@ class RenderManager:
                 "max_elevation": max_elevation,
                 "azimuth_resolution": azimuth_resolution,
                 "raster_pts": raster_pts,
+                "ray_dirs_lidar": ray_dirs_lidar,
+                "pano_dirs_lidar": ray_dirs_lidar.squeeze(0),
+                "depth_valid_mask": depth_valid_mask,
             }
 
     def init(self, params: InitParams) -> InitResp:
@@ -398,6 +432,45 @@ class RenderManager:
         self._build_lidar_data(params.lidars)
         self._init_mlp_decoder(params.lidars)
         return InitResp(init_status=True)
+
+    def _calculate_viewmats(
+        self,
+        extrinsics_tensor: torch.Tensor,
+        ego_heading: float,
+        ego_position: torch.Tensor,
+    ) -> torch.Tensor:
+        device = ego_position.device
+        cos_h = math.cos(float(ego_heading))
+        sin_h = math.sin(float(ego_heading))
+        ego_pose = torch.tensor(
+            [
+                [cos_h, -sin_h, 0.0, 0.0],
+                [sin_h, cos_h, 0.0, 0.0],
+                [0.0, 0.0, 1.0, 0.0],
+                [0.0, 0.0, 0.0, 1.0],
+            ],
+            device=device,
+            dtype=torch.float32,
+        )
+        ego_pose = ego_pose.clone()
+        ego_pose[:3, 3] = ego_position
+
+        c2w = torch.matmul(ego_pose.unsqueeze(0), extrinsics_tensor)
+
+        R = c2w[:, :3, :3]
+        t = c2w[:, :3, 3]
+        Rt = R.transpose(-2, -1)
+        t_inv = -(Rt @ t.unsqueeze(-1)).squeeze(-1)
+
+        w2c = (
+            torch
+            .eye(4, device=device, dtype=torch.float32)
+            .expand(c2w.shape[0], 4, 4)
+            .clone()
+        )
+        w2c[:, :3, :3] = Rt
+        w2c[:, :3, 3] = t_inv
+        return w2c
 
     def render_frame(self, params: FrameParams) -> FrameResp:
         """渲染接口，每帧调用"""
@@ -459,12 +532,26 @@ class RenderManager:
         for resolution, cam_data in self.camera_data.items():
             # 直接使用预计算的数据，无需运行时转换
             camera_ids = cam_data["camera_ids"]
-            extrinsics_list = cam_data["extrinsics_list"]
+            extrinsics_tensor = cam_data["extrinsics_tensor"]
             Ks = cam_data["intrinsics_tensor"]
             width = cam_data["width"]
             height = cam_data["height"]
 
-            viewmats = calculate_viewmats(extrinsics_list, ego_heading, ego_position)
+            viewmats = self._calculate_viewmats(
+                extrinsics_tensor, ego_heading, ego_position
+            )
+
+            ray_dirs_world = None
+            if self.rgb_decoder is not None and getattr(
+                self.rgb_decoder, "use_ray_dirs", False
+            ):
+                dirs_cam = cam_data["ray_dirs_cam"]
+                c2w = invert_world2camera(viewmats)
+                R = c2w[:, :3, :3]
+                C = int(dirs_cam.shape[0])
+                dirs_flat = dirs_cam.view(C, -1, 3)
+                ray_world_flat = torch.bmm(dirs_flat, R.transpose(1, 2))
+                ray_dirs_world = ray_world_flat.view(C, height, width, 3)
 
             # 先渲染前景（background + actors，不包含 sky）
             batch_colors, batch_alphas = render(
@@ -479,6 +566,7 @@ class RenderManager:
                 height,
                 rgb_decoder=self.rgb_decoder,
                 camera_ids=camera_ids,
+                ray_dirs_world=ray_dirs_world,
             )
 
             # 再渲染 sky，并用前景 alpha 做合成：rgb = fg + sky * (1 - acc)
@@ -495,6 +583,7 @@ class RenderManager:
                     height,
                     rgb_decoder=self.rgb_decoder,
                     camera_ids=camera_ids,
+                    ray_dirs_world=ray_dirs_world,
                 )
                 batch_colors = batch_colors + sky_colors * (1 - batch_alphas)
 
@@ -523,8 +612,9 @@ class RenderManager:
         ) = render_params
 
         for lidar_id, lidar_cfg in self.lidar_data.items():
-            viewmats = calculate_viewmats(
-                [lidar_cfg["extrinsics"]], ego_heading, ego_position
+            extrinsics_tensor = lidar_cfg["extrinsics_tensor"]
+            viewmats = self._calculate_viewmats(
+                extrinsics_tensor, ego_heading, ego_position
             )
             if self.mlp_decoder is not None:
                 lidar_features = self._compute_lidar_mlp_features_from_colors(
@@ -587,11 +677,26 @@ class RenderManager:
             )
 
             if self.mlp_decoder is not None:
+                ray_dirs_world = None
+                ray_dirs_lidar = lidar_cfg.get("ray_dirs_lidar", None)
+                if isinstance(ray_dirs_lidar, torch.Tensor):
+                    lidar_to_world = invert_world2camera(viewmats)
+                    R = lidar_to_world[:, :3, :3]
+                    B, H, W = (
+                        int(ray_dirs_lidar.shape[0]),
+                        int(ray_dirs_lidar.shape[1]),
+                        int(ray_dirs_lidar.shape[2]),
+                    )
+                    dirs_flat = ray_dirs_lidar.view(B, -1, 3)
+                    ray_world_flat = torch.bmm(dirs_flat, R.transpose(1, 2))
+                    ray_dirs_world = ray_world_flat.view(B, H, W, 3)
+
                 decoded_intensity, decoded_ray_drop_logits = self.mlp_decoder(
                     lidar_id,
                     rendered_feat[..., :-1],
                     raster_pts,
                     viewmats,
+                    ray_dirs_world=ray_dirs_world,
                 )
                 decoded_rendered = torch.cat(
                     [
@@ -607,7 +712,12 @@ class RenderManager:
 
             from util import pano_to_lidar_with_intensities
 
-            pred = pano_to_lidar_with_intensities(raster_pts, out)
+            pred = pano_to_lidar_with_intensities(
+                raster_pts,
+                out,
+                directions=lidar_cfg.get("pano_dirs_lidar", None),
+                depth_valid_mask=lidar_cfg.get("depth_valid_mask", None),
+            )
             lidars[lidar_id] = pred
 
         return lidars

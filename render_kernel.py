@@ -98,10 +98,10 @@ def compute_lidar_ray_dirs_world(
     return ray_dirs_world
 
 
-def get_ray_dirs_pinhole_batched(
-    Ks: torch.Tensor, width: int, height: int, c2w: torch.Tensor
+def get_ray_dirs_cam_pinhole_batched(
+    Ks: torch.Tensor, width: int, height: int
 ) -> torch.Tensor:
-    """为每个相机生成归一化的世界系射线方向，输出形状为[C, H, W, 3]。"""
+    """为每个相机生成归一化的相机系射线方向，输出形状为[C, H, W, 3]。"""
     device = Ks.device
     dtype = Ks.dtype
     C = Ks.shape[0]
@@ -121,11 +121,20 @@ def get_ray_dirs_pinhole_batched(
     ys = ys.expand(C, height, width)
 
     dirs_cam = torch.stack([xs, -ys, -torch.ones_like(xs)], dim=-1)  # [C, H, W, 3]
+    dirs_cam = dirs_cam / (dirs_cam.norm(dim=-1, keepdim=True) + 1e-8)
+    return dirs_cam
+
+
+def get_ray_dirs_pinhole_batched(
+    Ks: torch.Tensor, width: int, height: int, c2w: torch.Tensor
+) -> torch.Tensor:
+    """为每个相机生成归一化的世界系射线方向，输出形状为[C, H, W, 3]。"""
+    dirs_cam = get_ray_dirs_cam_pinhole_batched(Ks, width, height)
+    C = dirs_cam.shape[0]
     dirs_cam = dirs_cam.view(C, -1, 3)
 
     R = c2w[:, :3, :3]  # [C, 3, 3]
     dirs_world = torch.bmm(dirs_cam, R.transpose(1, 2))
-    dirs_world = dirs_world / (dirs_world.norm(dim=-1, keepdim=True) + 1e-8)
     return dirs_world.view(C, height, width, 3)
 
 
@@ -141,6 +150,7 @@ def render_gaussian_splatting(
     img_height,
     rgb_decoder=None,
     camera_ids: Optional[Sequence[str]] = None,
+    ray_dirs_world: Optional[torch.Tensor] = None,
 ):
     """
     执行高斯点云渲染的核心函数
@@ -239,9 +249,12 @@ def render_gaussian_splatting(
 
     features = render_colors
     if getattr(rgb_decoder, "use_ray_dirs", False):
-        c2w = invert_world2camera(viewmats)
-        ray_dirs = get_ray_dirs_pinhole_batched(Ks, img_width, img_height, c2w)
-        features = torch.cat([features, ray_dirs], dim=-1)
+        if ray_dirs_world is None:
+            c2w = invert_world2camera(viewmats)
+            ray_dirs_world = get_ray_dirs_pinhole_batched(
+                Ks, img_width, img_height, c2w
+            )
+        features = torch.cat([features, ray_dirs_world], dim=-1)
 
     decoded: List[torch.Tensor] = []
     for cam_idx, cam_id in enumerate(camera_ids):
@@ -262,6 +275,7 @@ def render_native(
     img_height,
     rgb_decoder=None,
     camera_ids: Optional[Sequence[str]] = None,
+    ray_dirs_world: Optional[torch.Tensor] = None,
 ):
     """原生渲染接口。
 
@@ -333,9 +347,12 @@ def render_native(
 
     features = render_feats
     if getattr(rgb_decoder, "use_ray_dirs", False):
-        c2w = invert_world2camera(viewmats)
-        ray_dirs = get_ray_dirs_pinhole_batched(Ks, img_width, img_height, c2w)
-        features = torch.cat([features, ray_dirs], dim=-1)
+        if ray_dirs_world is None:
+            c2w = invert_world2camera(viewmats)
+            ray_dirs_world = get_ray_dirs_pinhole_batched(
+                Ks, img_width, img_height, c2w
+            )
+        features = torch.cat([features, ray_dirs_world], dim=-1)
 
     decoded: List[torch.Tensor] = []
     for cam_idx, cam_id in enumerate(camera_ids):
@@ -356,6 +373,7 @@ def render(
     img_height,
     rgb_decoder=None,
     camera_ids: Optional[Sequence[str]] = None,
+    ray_dirs_world: Optional[torch.Tensor] = None,
 ):
     if NATIVE:
         return render_native(
@@ -370,6 +388,7 @@ def render(
             img_height,
             rgb_decoder=rgb_decoder,
             camera_ids=camera_ids,
+            ray_dirs_world=ray_dirs_world,
         )
     else:
         return render_gaussian_splatting(
@@ -384,6 +403,7 @@ def render(
             img_height,
             rgb_decoder=rgb_decoder,
             camera_ids=camera_ids,
+            ray_dirs_world=ray_dirs_world,
         )
 
 

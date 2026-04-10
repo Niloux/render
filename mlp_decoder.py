@@ -250,6 +250,7 @@ class MLPDecoder(nn.Module):
         features: torch.Tensor,
         raster_pts: torch.Tensor,
         viewmats: torch.Tensor,
+        ray_dirs_world: torch.Tensor | None = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """前向：把光栅化特征解码为 intensity 与 ray_drop_logits。
 
@@ -269,6 +270,8 @@ class MLPDecoder(nn.Module):
             raster_pts = raster_pts.unsqueeze(0)
         if viewmats.dim() == 2:
             viewmats = viewmats.unsqueeze(0)
+        if ray_dirs_world is not None and ray_dirs_world.dim() == 3:
+            ray_dirs_world = ray_dirs_world.unsqueeze(0)
 
         if features.dim() != 4:
             raise ValueError(f"features维度必须为3或4，实际为{tuple(features.shape)}")
@@ -278,10 +281,16 @@ class MLPDecoder(nn.Module):
             )
         if viewmats.dim() != 3:
             raise ValueError(f"viewmats维度必须为2或3，实际为{tuple(viewmats.shape)}")
+        if ray_dirs_world is not None and ray_dirs_world.dim() != 4:
+            raise ValueError(
+                f"ray_dirs_world维度必须为3或4，实际为{tuple(ray_dirs_world.shape)}"
+            )
 
         features = features.to(device=self.device)
         raster_pts = raster_pts.to(device=self.device)
         viewmats = viewmats.to(device=self.device)
+        if ray_dirs_world is not None:
+            ray_dirs_world = ray_dirs_world.to(device=self.device)
 
         B, H, W, F = features.shape
         if F != self.feature_dim:
@@ -294,8 +303,20 @@ class MLPDecoder(nn.Module):
         if raster_pts.shape[0] == 1 and B > 1:
             raster_pts = raster_pts.expand(B, -1, -1, -1)
 
-        ray_dirs_world = compute_lidar_ray_dirs_world(raster_pts, viewmats)
-
+        if ray_dirs_world is None:
+            ray_dirs_world = compute_lidar_ray_dirs_world(raster_pts, viewmats)
+        else:
+            if ray_dirs_world.shape[-1] != 3:
+                raise ValueError(
+                    f"ray_dirs_world最后一维应为3，实际为{ray_dirs_world.shape[-1]}"
+                )
+            if ray_dirs_world.shape[0] == 1 and B > 1:
+                ray_dirs_world = ray_dirs_world.expand(B, -1, -1, -1)
+            if ray_dirs_world.shape[:3] != (B, H, W):
+                raise ValueError(
+                    "ray_dirs_world形状与features不一致: "
+                    f"ray_dirs_world={tuple(ray_dirs_world.shape)} features={(B, H, W, F)}"
+                )
         idx = self._get_id(lidar_id)
         embedding = self.appearance_dim[idx]
         embedding_expanded = embedding.expand(B, H, W, -1)
