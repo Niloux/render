@@ -1,4 +1,5 @@
 import math
+import os
 from typing import List, Optional, Sequence
 
 import torch
@@ -16,6 +17,10 @@ from gsplat.cuda._wrapper import (
 )
 
 NATIVE = True
+
+_RENDER_TILE_SIZE = int(os.environ.get("RENDER_TILE_SIZE", "16"))
+_RENDER_RASTERIZE_MODE = os.environ.get("RENDER_RASTERIZE_MODE", "antialiased")
+_RENDER_RADIUS_CLIP = float(os.environ.get("RENDER_RADIUS_CLIP", "3.0"))
 
 
 def extract_camera_centers(viewmats: torch.Tensor):
@@ -248,18 +253,20 @@ def render_gaussian_splatting(
         )
 
     features = render_colors
-    if getattr(rgb_decoder, "use_ray_dirs", False):
-        if ray_dirs_world is None:
-            c2w = invert_world2camera(viewmats)
-            ray_dirs_world = get_ray_dirs_pinhole_batched(
-                Ks, img_width, img_height, c2w
-            )
-        features = torch.cat([features, ray_dirs_world], dim=-1)
+    if getattr(rgb_decoder, "use_ray_dirs", False) and ray_dirs_world is None:
+        c2w = invert_world2camera(viewmats)
+        ray_dirs_world = get_ray_dirs_pinhole_batched(Ks, img_width, img_height, c2w)
 
-    decoded: List[torch.Tensor] = []
-    for cam_idx, cam_id in enumerate(camera_ids):
-        decoded.append(rgb_decoder(cam_id, features[cam_idx]))
-    rendered_rgb = torch.stack(decoded, dim=0)
+    if hasattr(rgb_decoder, "forward_batched"):
+        rendered_rgb = rgb_decoder.forward_batched(
+            camera_ids, features, ray_dirs_world=ray_dirs_world
+        )
+    else:
+        decoded: List[torch.Tensor] = []
+        for cam_idx, cam_id in enumerate(camera_ids):
+            ray = ray_dirs_world[cam_idx] if (ray_dirs_world is not None) else None
+            decoded.append(rgb_decoder(cam_id, features[cam_idx], ray_dirs_world=ray))
+        rendered_rgb = torch.stack(decoded, dim=0)
     return rendered_rgb, render_alphas
 
 
@@ -304,9 +311,9 @@ def render_native(
             far_plane=1000,
             sh_degree=1,
             packed=True,
-            tile_size=16,
-            radius_clip=3.0,
-            rasterize_mode="antialiased",
+            tile_size=_RENDER_TILE_SIZE,
+            radius_clip=_RENDER_RADIUS_CLIP,
+            rasterize_mode=_RENDER_RASTERIZE_MODE,
         )
         return render_colors, render_alphas
 
@@ -340,24 +347,26 @@ def render_native(
         far_plane=1000,
         sh_degree=None,
         packed=True,
-        tile_size=16,
-        radius_clip=3.0,
-        rasterize_mode="antialiased",
+        tile_size=_RENDER_TILE_SIZE,
+        radius_clip=_RENDER_RADIUS_CLIP,
+        rasterize_mode=_RENDER_RASTERIZE_MODE,
     )
 
     features = render_feats
-    if getattr(rgb_decoder, "use_ray_dirs", False):
-        if ray_dirs_world is None:
-            c2w = invert_world2camera(viewmats)
-            ray_dirs_world = get_ray_dirs_pinhole_batched(
-                Ks, img_width, img_height, c2w
-            )
-        features = torch.cat([features, ray_dirs_world], dim=-1)
+    if getattr(rgb_decoder, "use_ray_dirs", False) and ray_dirs_world is None:
+        c2w = invert_world2camera(viewmats)
+        ray_dirs_world = get_ray_dirs_pinhole_batched(Ks, img_width, img_height, c2w)
 
-    decoded: List[torch.Tensor] = []
-    for cam_idx, cam_id in enumerate(camera_ids):
-        decoded.append(rgb_decoder(cam_id, features[cam_idx]))
-    rendered_rgb = torch.stack(decoded, dim=0)
+    if hasattr(rgb_decoder, "forward_batched"):
+        rendered_rgb = rgb_decoder.forward_batched(
+            camera_ids, features, ray_dirs_world=ray_dirs_world
+        )
+    else:
+        decoded: List[torch.Tensor] = []
+        for cam_idx, cam_id in enumerate(camera_ids):
+            ray = ray_dirs_world[cam_idx] if (ray_dirs_world is not None) else None
+            decoded.append(rgb_decoder(cam_id, features[cam_idx], ray_dirs_world=ray))
+        rendered_rgb = torch.stack(decoded, dim=0)
     return rendered_rgb, render_alphas
 
 

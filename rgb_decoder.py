@@ -1,8 +1,10 @@
-from typing import Any, Dict, Union
+import os
+from typing import Any, Dict, List, Sequence, Union
 
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 
 def get_expon_lr_func(
@@ -126,19 +128,207 @@ class RGBDecoderCNN(torch.nn.Module):
         self.skip_dim = skip_dim
         self.out_dim = out_dim
 
-    def forward(self, features):
-        """将每像素特征解码为RGB，输入形状为[H, W, C]或[1, H, W, C]。"""
-        features = features.view(1, *features.shape[-3:])
-        albedo, spec = features.split(
+    def _forward_plain(
+        self, albedo: torch.Tensor, spec_in: torch.Tensor, orig_dim: int
+    ) -> torch.Tensor:
+        spec = spec_in.permute(0, 3, 1, 2)
+        if spec.is_cuda:
+            spec = spec.contiguous(memory_format=torch.channels_last)
+        spec = self.net(spec)
+        spec = spec.permute(0, 2, 3, 1)
+
+        out = albedo * (1 + spec[..., :3]) + spec[..., 3:]
+        if orig_dim == 3:
+            return out.squeeze(0)
+        return out
+
+    def _prepare_embedding(
+        self, embedding: torch.Tensor | None, ref: torch.Tensor
+    ) -> tuple[torch.Tensor | None, int]:
+        if embedding is None:
+            return None, 0
+
+        B = int(ref.shape[0])
+        if embedding.dim() == 1:
+            embedding = embedding.unsqueeze(0)
+        if embedding.dim() != 2 or int(embedding.shape[0]) != B:
+            raise ValueError(
+                "embedding形状必须为[Emb]或[B,Emb]且与features的batch一致，"
+                f"实际为{tuple(embedding.shape)} features_batch={B}"
+            )
+        emb = embedding.to(device=ref.device, dtype=ref.dtype)
+        return emb, int(emb.shape[1])
+
+    def _prepare_ray_dirs(
+        self, ray_dirs: torch.Tensor | None, ref: torch.Tensor
+    ) -> tuple[torch.Tensor | None, int]:
+        if ray_dirs is None:
+            return None, 0
+
+        B = int(ref.shape[0])
+        if ray_dirs.dim() == 3:
+            ray_dirs = ray_dirs.unsqueeze(0)
+        if (
+            ray_dirs.dim() != 4
+            or int(ray_dirs.shape[0]) != B
+            or int(ray_dirs.shape[-1]) != 3
+        ):
+            raise ValueError(
+                "ray_dirs形状必须为[H,W,3]或[B,H,W,3]且与features的batch一致，"
+                f"实际为{tuple(ray_dirs.shape)} features_batch={B}"
+            )
+
+        ray = ray_dirs.to(device=ref.device, dtype=ref.dtype).permute(0, 3, 1, 2)
+        if ray.is_cuda:
+            ray = ray.contiguous(memory_format=torch.channels_last)
+        return ray, int(ray.shape[1])
+
+    def _conv0_with_extras(
+        self,
+        conv0: nn.Conv2d,
+        spec_base: torch.Tensor,
+        ray: torch.Tensor | None,
+        ray_dim: int,
+        emb: torch.Tensor | None,
+        emb_dim: int,
+    ) -> torch.Tensor:
+        in_base = int(spec_base.shape[1])
+        w0 = conv0.weight
+        y0 = F.conv2d(
+            spec_base,
+            w0[:, :in_base],
+            bias=conv0.bias,
+            stride=conv0.stride,
+            padding=conv0.padding,
+            dilation=conv0.dilation,
+            groups=conv0.groups,
+        )
+        if ray is not None:
+            y0 = y0 + F.conv2d(
+                ray,
+                w0[:, in_base : in_base + ray_dim],
+                bias=None,
+                stride=conv0.stride,
+                padding=conv0.padding,
+                dilation=conv0.dilation,
+                groups=conv0.groups,
+            )
+        if emb is not None and emb_dim > 0:
+            w0_emb = w0[:, in_base + ray_dim :]
+            emb_bias0 = emb @ w0_emb.sum(dim=(2, 3)).transpose(0, 1)
+            y0 = y0 + emb_bias0.view(int(spec_base.shape[0]), -1, 1, 1)
+        return y0
+
+    def _res_with_extras(
+        self,
+        res: nn.Module,
+        spec_base: torch.Tensor,
+        ray: torch.Tensor | None,
+        ray_dim: int,
+        emb: torch.Tensor | None,
+        emb_dim: int,
+    ) -> torch.Tensor:
+        in_base = int(spec_base.shape[1])
+        B = int(spec_base.shape[0])
+
+        if not isinstance(res, nn.Conv2d):
+            return res(spec_base)
+
+        wr = res.weight
+        yr = F.conv2d(
+            spec_base,
+            wr[:, :in_base],
+            bias=res.bias,
+            stride=res.stride,
+            padding=res.padding,
+            dilation=res.dilation,
+            groups=res.groups,
+        )
+        if ray is not None:
+            yr = yr + F.conv2d(
+                ray,
+                wr[:, in_base : in_base + ray_dim],
+                bias=None,
+                stride=res.stride,
+                padding=res.padding,
+                dilation=res.dilation,
+                groups=res.groups,
+            )
+        if emb is not None and emb_dim > 0:
+            wr_emb = wr[:, in_base + ray_dim :].squeeze(-1).squeeze(-1)
+            emb_biasr = emb @ wr_emb.transpose(0, 1)
+            yr = yr + emb_biasr.view(B, -1, 1, 1)
+        return yr
+
+    def _forward_fold(
+        self,
+        albedo: torch.Tensor,
+        spec_in: torch.Tensor,
+        embedding: torch.Tensor | None,
+        ray_dirs: torch.Tensor | None,
+        orig_dim: int,
+    ) -> torch.Tensor:
+        emb, emb_dim = self._prepare_embedding(embedding, spec_in)
+        ray, ray_dim = self._prepare_ray_dirs(ray_dirs, spec_in)
+
+        spec_base = spec_in.permute(0, 3, 1, 2)
+        if spec_base.is_cuda:
+            spec_base = spec_base.contiguous(memory_format=torch.channels_last)
+
+        first = self.net[0]
+        conv0 = first.main_branch[0]
+
+        in_full = int(conv0.in_channels)
+        in_base = int(spec_base.shape[1])
+        if in_base + ray_dim + emb_dim != in_full:
+            raise ValueError(
+                "features/spec通道与ray/embedding维度不匹配: "
+                f"spec_base={in_base} ray={ray_dim} emb={emb_dim} expected_in={in_full}"
+            )
+
+        y0 = self._conv0_with_extras(conv0, spec_base, ray, ray_dim, emb, emb_dim)
+        y0 = first.main_branch[1](y0)
+        y0 = first.main_branch[2](y0)
+
+        conv1 = first.main_branch[3]
+        y1 = conv1(y0)
+        y1 = first.main_branch[4](y1)
+
+        yr = self._res_with_extras(
+            first.res_branch, spec_base, ray, ray_dim, emb, emb_dim
+        )
+
+        x = first.final_activation(yr + y1)
+        for i in range(1, len(self.net)):
+            x = self.net[i](x)
+
+        spec = x.permute(0, 2, 3, 1)
+        out = albedo * (1 + spec[..., :3]) + spec[..., 3:]
+        if orig_dim == 3:
+            return out.squeeze(0)
+        return out
+
+    def forward(
+        self,
+        features: torch.Tensor,
+        embedding: torch.Tensor | None = None,
+        ray_dirs: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        """将每像素特征解码为RGB。"""
+        orig_dim = features.dim()
+        if orig_dim == 3:
+            features = features.unsqueeze(0)
+        elif orig_dim != 4:
+            raise ValueError(f"features维度必须为3或4，实际为{tuple(features.shape)}")
+
+        albedo, spec_in = features.split(
             [self.skip_dim, features.shape[-1] - self.skip_dim], dim=-1
         )
 
-        spec = spec.permute(0, 3, 1, 2)
-        spec = self.net(spec)
+        if embedding is None and ray_dirs is None:
+            return self._forward_plain(albedo, spec_in, orig_dim)
 
-        spec = spec.permute(0, 2, 3, 1)
-
-        return (albedo * (1 + spec[..., :3]) + spec[..., 3:]).squeeze(0)
+        return self._forward_fold(albedo, spec_in, embedding, ray_dirs, orig_dim)
 
 
 class RGBDecoder(nn.Module):
@@ -251,16 +441,27 @@ class RGBDecoder(nn.Module):
             input_dim = feature_dim + appearance_dim
         else:
             input_dim = feature_dim
-        self.rgb_decoder = torch.compile(
-            RGBDecoderCNN(
-                input_dim,
-                hidden_dim=32,
-                kernel_size=3,
-                num_hidden_blocks=1,
-            ),
-            disable=True,  # TODO: enable automatically if we don't use the viewer
+        decoder = RGBDecoderCNN(
+            input_dim,
+            hidden_dim=32,
+            kernel_size=3,
+            num_hidden_blocks=1,
         )
-        self.rgb_decoder.to(self.device)
+        decoder.to(self.device)
+        if self.device.type == "cuda":
+            decoder = decoder.to(memory_format=torch.channels_last)
+
+        compile_enabled = os.environ.get("RENDER_TORCH_COMPILE", "1") == "1"
+        self.rgb_decoder = torch.compile(decoder, disable=not compile_enabled)
+
+        self._amp_enabled = (
+            self.device.type == "cuda"
+            and os.environ.get("RENDER_DECODER_AMP", "1") == "1"
+        )
+        amp_dtype = os.environ.get("RENDER_DECODER_AMP_DTYPE", "fp16").lower()
+        self._amp_dtype = (
+            torch.bfloat16 if amp_dtype in ("bf16", "bfloat16") else torch.float16
+        )
 
         # 1223, yyf, for arbitrary cams
         self.id_trans = {0: 0, 1: 1, 2: 2, 3: 3}
@@ -273,6 +474,7 @@ class RGBDecoder(nn.Module):
         return state_dict
 
     def load_state_dict(self, state_dict, strict: bool = True):
+        """加载权重，兼容 torch.compile 前后 state_dict 的 key 命名差异。"""
         params = (
             state_dict["params"]
             if isinstance(state_dict, dict)
@@ -280,6 +482,37 @@ class RGBDecoder(nn.Module):
             and isinstance(state_dict["params"], dict)
             else state_dict
         )
+
+        if isinstance(params, dict):
+            has_plain = any(k.startswith("rgb_decoder.net.") for k in params.keys())
+            has_compiled = any(
+                k.startswith("rgb_decoder._orig_mod.net.") for k in params.keys()
+            )
+            is_compiled = hasattr(getattr(self, "rgb_decoder", None), "_orig_mod")
+
+            if is_compiled and has_plain and (not has_compiled):
+                remapped = {}
+                for k, v in params.items():
+                    if k.startswith("rgb_decoder.") and (
+                        not k.startswith("rgb_decoder._orig_mod.")
+                    ):
+                        remapped[
+                            "rgb_decoder._orig_mod." + k[len("rgb_decoder.") :]
+                        ] = v
+                    else:
+                        remapped[k] = v
+                params = remapped
+            elif (not is_compiled) and has_compiled and (not has_plain):
+                remapped = {}
+                for k, v in params.items():
+                    if k.startswith("rgb_decoder._orig_mod."):
+                        remapped[
+                            "rgb_decoder." + k[len("rgb_decoder._orig_mod.") :]
+                        ] = v
+                    else:
+                        remapped[k] = v
+                params = remapped
+
         return super().load_state_dict(params, strict=strict)
 
     def training_setup(self):
@@ -333,12 +566,99 @@ class RGBDecoder(nn.Module):
         else:
             raise ValueError(f"invalid mode: {self.mode}")
 
-    def forward(self, camera, features):
+    def forward(self, camera, features, ray_dirs_world: torch.Tensor | None = None):
+        """解码单个相机的像素特征为RGB。"""
+        ray = (
+            ray_dirs_world
+            if (
+                self.use_ray_dirs
+                and ray_dirs_world is not None
+                and int(features.shape[-1]) == 12
+            )
+            else None
+        )
         if self.use_app_embed:
             id = self.get_id(camera)
             embedding = self.appearance_embedding[id]
-            embedding_expanded = embedding.expand(*features.shape[:-1], -1)
-            rendered_features = torch.cat([features, embedding_expanded], dim=-1)
-            return self.rgb_decoder(rendered_features)
+            if (
+                self._amp_enabled
+                and isinstance(features, torch.Tensor)
+                and features.is_cuda
+            ):
+                with torch.autocast(device_type="cuda", dtype=self._amp_dtype):
+                    return self.rgb_decoder(features, embedding, ray_dirs=ray)
+            return self.rgb_decoder(features, embedding, ray_dirs=ray)
+
+        if (
+            self._amp_enabled
+            and isinstance(features, torch.Tensor)
+            and features.is_cuda
+        ):
+            with torch.autocast(device_type="cuda", dtype=self._amp_dtype):
+                return self.rgb_decoder(features, ray_dirs=ray)
+        return self.rgb_decoder(features, ray_dirs=ray)
+
+    def forward_batched(
+        self,
+        cameras: Sequence[object],
+        features: torch.Tensor,
+        ray_dirs_world: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        """批量解码多相机的像素特征为RGB。
+
+        Args:
+            cameras: 相机ID/相机对象序列，长度为B。
+            features: [B, H, W, C] 或 [H, W, C]。
+            ray_dirs_world: 可选，[B, H, W, 3]。
+                仅当模型启用use_ray_dirs且features通道不含ray时使用。
+
+        Returns:
+            rgb: [B, H, W, 3] 或 [H, W, 3]。
+        """
+        orig_dim = features.dim()
+        if orig_dim == 3:
+            batch = features.unsqueeze(0)
+        elif orig_dim == 4:
+            batch = features
         else:
-            return self.rgb_decoder(features)
+            raise ValueError(f"features维度必须为3或4，实际为{tuple(features.shape)}")
+
+        B = int(batch.shape[0])
+        if len(cameras) != B:
+            raise ValueError(
+                f"cameras数量与batch不一致: cameras={len(cameras)} batch={B}"
+            )
+
+        embedding = None
+        if self.use_app_embed:
+            ids: List[int] = [self.get_id(cam) for cam in cameras]
+            ids_t = torch.tensor(ids, device=batch.device, dtype=torch.long)
+            embedding = self.appearance_embedding[ids_t]
+
+        ray = (
+            ray_dirs_world
+            if (
+                self.use_ray_dirs
+                and ray_dirs_world is not None
+                and int(batch.shape[-1]) == 12
+            )
+            else None
+        )
+
+        if self._amp_enabled and batch.is_cuda:
+            with torch.autocast(device_type="cuda", dtype=self._amp_dtype):
+                out = (
+                    self.rgb_decoder(batch, embedding, ray_dirs=ray)
+                    if embedding is not None
+                    else self.rgb_decoder(batch, ray_dirs=ray)
+                )
+        else:
+            out = (
+                self.rgb_decoder(batch, embedding, ray_dirs=ray)
+                if embedding is not None
+                else self.rgb_decoder(batch, ray_dirs=ray)
+            )
+
+        if orig_dim == 3:
+            return out.squeeze(0)
+        return out

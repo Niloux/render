@@ -1,4 +1,5 @@
 import math
+import os
 from typing import Dict, List, Optional, Tuple
 
 import torch
@@ -27,7 +28,10 @@ from rgb_decoder import RGBDecoder
 
 
 class RenderManager:
-    def __init__(self, model: str = "model.path") -> None:
+    def __init__(
+        self, model: str = "model.path", enable_torch_backends: bool = True
+    ) -> None:
+        self._configure_torch_backends(enable_torch_backends)
         self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
         self.model_path = model
         self.model = GSModel.load_from_pth(model).to_device(self.device)
@@ -54,6 +58,27 @@ class RenderManager:
         self.mlp_decoder: MLPDecoder | None = None
         self.camera_id_to_index: Dict[str, int] = {}
         self.lidar_id_to_index: Dict[str, int] = {}
+
+    @staticmethod
+    def _configure_torch_backends(enable: bool) -> None:
+        """配置PyTorch推理侧性能相关开关。
+
+        Args:
+            enable: 是否开启。
+                - 默认建议开启以提升CNN推理吞吐。
+                - 如需强制覆盖，可设置环境变量 RENDER_TORCH_BACKENDS=0/1。
+        """
+        env = os.environ.get("RENDER_TORCH_BACKENDS")
+        if env is not None:
+            enable = env == "1"
+        if not enable:
+            return
+
+        torch.backends.cudnn.benchmark = True
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
+        if hasattr(torch, "set_float32_matmul_precision"):
+            torch.set_float32_matmul_precision("high")
 
     def _setup_render_buffers(self) -> None:
         """预分配渲染buffers，消除每帧内存分配
