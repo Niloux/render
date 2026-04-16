@@ -15,6 +15,16 @@ class Camera:
     width: int
     height: int
 
+    def to_json(self) -> Dict:
+        """将Camera对象转换为JSON字典"""
+        return {
+            "id": self.id,
+            "extrinsics": self.extrinsics,
+            "intrinsics": self.intrinsics,
+            "width": self.width,
+            "height": self.height,
+        }
+
 
 @dataclass
 class Lidar:
@@ -31,6 +41,23 @@ class Lidar:
     tile_width: int = 64
     tile_height: int = 4
 
+    def to_json(self) -> Dict:
+        """将Lidar对象转换为JSON字典"""
+        return {
+            "id": self.id,
+            "extrinsics": self.extrinsics,
+            "azimuth_resolution": self.azimuth_resolution,
+            "min_azimuth": self.min_azimuth,
+            "max_azimuth": self.max_azimuth,
+            "n_elevation_channels": self.n_elevation_channels,
+            "min_elevation": self.min_elevation,
+            "max_elevation": self.max_elevation,
+            "near_plane": self.near_plane,
+            "far_plane": self.far_plane,
+            "tile_width": self.tile_width,
+            "tile_height": self.tile_height,
+        }
+
 
 @dataclass
 class InitParams:
@@ -40,6 +67,19 @@ class InitParams:
     render_lidar: bool = False
     model_id: Optional[List[int]] = None
     model_path: Optional[str] = None
+
+    def to_json(self) -> Dict:
+        """将InitParams对象转换为JSON字典"""
+        return {
+            "cameras": [camera.to_json() for camera in self.cameras],
+            "lidars": (
+                [lidar.to_json() for lidar in self.lidars] if self.lidars else None
+            ),
+            "render_camera": self.render_camera,
+            "render_lidar": self.render_lidar,
+            "model_id": self.model_id,
+            "model_path": self.model_path,
+        }
 
 
 @dataclass
@@ -66,6 +106,13 @@ class Vehicle:
     yaw: float
     type: str
 
+    def to_json(self) -> Dict:
+        return {
+            "trajectory": self.trajectory,
+            "yaw": self.yaw,
+            "type": self.type if self.type is not None else "",
+        }
+
 
 @dataclass
 class FrameParams:
@@ -73,6 +120,15 @@ class FrameParams:
     ego_yaw: float
     env_vehicles: List[Vehicle]
     timestamp: int
+
+    def to_json(self) -> Dict:
+        """将FrameParams对象转换为JSON字典"""
+        return {
+            "ego_trajectory": self.ego_trajectory,
+            "ego_yaw": self.ego_yaw,
+            "env_vehicles": [v.to_json() for v in self.env_vehicles],
+            "timestamp": self.timestamp,
+        }
 
 
 @dataclass
