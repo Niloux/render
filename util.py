@@ -87,7 +87,9 @@ def save_colors_as_png(image: Dict[str, torch.Tensor], output_dir="output"):
         img.save(output_path)
 
 
-def pano_to_lidar_with_intensities(raster_pts, out):
+def pano_to_lidar_with_intensities(
+    raster_pts, out, directions=None, depth_valid_mask=None
+):
     """
     将渲染输出转换为点云
 
@@ -97,80 +99,64 @@ def pano_to_lidar_with_intensities(raster_pts, out):
         - "depth": [H, W] - 预测深度
         - "intensity": [H, W] - 预测强度
         - "ray_drop_prob": [H, W] - 射线丢弃概率
+    directions: 可选，预计算方向向量，形状为[H, W, 3]或[H*W, 3]
+    depth_valid_mask: 可选，预计算静态深度有效mask，形状为[H, W]或[H*W]
 
     返回:
     pred_point_cloud: [N, 4] - 预测点云 (x, y, z, intensity)
-    gt_point_cloud: [N, 4] - 真值点云 (x, y, z, intensity)
     """
-    # 确保输入维度正确
     if len(raster_pts.shape) == 4 and raster_pts.shape[0] == 1:
-        raster_pts = raster_pts.squeeze(0)  # [H, W, 5]
+        raster_pts = raster_pts.squeeze(0)
 
     H, W = raster_pts.shape[:2]
 
-    # 计算方向向量
-    # 将角度从度转换为弧度并展平
-    azimuth_angles = torch.deg2rad(raster_pts[..., 0].flatten())  # [H*W]
-    elevation_angles = torch.deg2rad(raster_pts[..., 1].flatten())  # [H*W]
+    if directions is None:
+        azimuth_angles = torch.deg2rad(raster_pts[..., 0].flatten())
+        elevation_angles = torch.deg2rad(raster_pts[..., 1].flatten())
+        directions = torch.stack(
+            [
+                torch.cos(elevation_angles) * torch.cos(azimuth_angles),
+                torch.cos(elevation_angles) * torch.sin(azimuth_angles),
+                torch.sin(elevation_angles),
+            ],
+            dim=-1,
+        )
+    else:
+        if isinstance(directions, torch.Tensor) and directions.dim() == 3:
+            directions = directions.reshape(-1, 3)
 
-    # 计算方向向量
-    directions = torch.stack(
-        [
-            torch.cos(elevation_angles) * torch.cos(azimuth_angles),  # x
-            torch.cos(elevation_angles) * torch.sin(azimuth_angles),  # y
-            torch.sin(elevation_angles),  # z
-        ],
-        dim=-1,
-    )  # [H*W, 3]
+    pred_depth = out["depth"]
+    pred_intensity = out["intensity"]
+    pred_ray_drop_logits = out["ray_drop_prob"]
 
-    # 使用预测的深度生成点云
-    pred_depth = out["depth"].flatten()  # [H*W]
-    pred_intensity = out["intensity"].flatten()  # [H*W]
-    _pred_ray_drop = out["ray_drop_prob"].flatten()  # [H*W]
+    if pred_depth.dim() == 2:
+        pred_depth = pred_depth.flatten()
+    if pred_intensity.dim() == 2:
+        pred_intensity = pred_intensity.flatten()
+    if pred_ray_drop_logits.dim() == 2:
+        pred_ray_drop_logits = pred_ray_drop_logits.flatten()
 
-    # 将深度图转换为点云坐标
-    pred_points = directions * pred_depth.unsqueeze(-1)  # [H*W, 3]
+    ray_drop_prob = torch.sigmoid(pred_ray_drop_logits)
+    pred_intensity = torch.sigmoid(pred_intensity)
 
-    # 将点云和强度合并
-    pred_point_cloud = torch.cat(
-        [
-            pred_points,  # 点云坐标 [H*W, 3]
-            pred_intensity.unsqueeze(-1),  # 强度值 [H*W, 1]
-        ],
-        dim=-1,
-    )  # [H*W, 4]
+    pred_points = directions * pred_depth.unsqueeze(-1)
+    pred_point_cloud = torch.cat([pred_points, pred_intensity.unsqueeze(-1)], dim=-1)
 
-    # 使用真值深度生成点云
-    gt_depth = raster_pts[..., 2].flatten()  # [H*W] - 真值深度
-    gt_intensity = raster_pts[..., 4].flatten()  # [H*W] - 真值强度
+    ray_drop_mask = ray_drop_prob < 0.5
 
-    # 将真值深度图转换为点云坐标
-    gt_points = directions * gt_depth.unsqueeze(-1)  # [H*W, 3]
+    if depth_valid_mask is None:
+        gt_depth = raster_pts[..., 2].flatten()
+        did_return_threshold = 1000.0
+        gt_did_return = gt_depth <= did_return_threshold
+        depth_valid_mask = (gt_depth > 0) & gt_did_return
+    else:
+        if isinstance(depth_valid_mask, torch.Tensor) and depth_valid_mask.dim() == 2:
+            depth_valid_mask = depth_valid_mask.flatten()
 
-    # 将真值点云和强度合并
-    gt_point_cloud = torch.cat(
-        [
-            gt_points,  # 真值点云坐标 [H*W, 3]
-            gt_intensity.unsqueeze(-1),  # 真值强度值 [H*W, 1]
-        ],
-        dim=-1,
-    )  # [H*W, 4]
+    valid_mask = depth_valid_mask & ray_drop_mask
+    pred_point_cloud = pred_point_cloud[valid_mask]
 
-    # 创建有效点掩码（基于射线丢弃概率和深度有效性）
-    # ray_drop_mask = pred_ray_drop > 0.5  # 射线丢弃概率小于0.5的点被认为是有效的
-    depth_valid_mask = gt_depth > 0  # 深度大于0的点被认为是有效的
-    # print(gt_point_cloud.shape, pred_point_cloud.shape)
-
-    # 合并掩码
-    # valid_mask =  depth_valid_mask * ray_drop_mask
-    valid_mask = depth_valid_mask
-
-    # 应用掩码过滤无效点
-    pred_point_cloud = pred_point_cloud[valid_mask]  # [N_valid, 4]
-    gt_point_cloud = gt_point_cloud[valid_mask]  # [N_valid, 4]
-    # print(gt_point_cloud.shape, pred_point_cloud.shape)
-    # quit()
-    return pred_point_cloud, gt_point_cloud
+    return pred_point_cloud
 
 
 def affine_inverse(A: np.ndarray):

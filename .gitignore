@@ -15,3 +15,5 @@ output/
 *.json
 
 UniAD/
+ego_pose/
+thrid_party/

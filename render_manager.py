@@ -1,3 +1,5 @@
+import math
+import os
 from typing import Dict, List, Optional, Tuple
 
 import torch
@@ -14,17 +16,22 @@ from data_types import (
     Lidar,
     Vehicle,
 )
+from mlp_decoder import MLPDecoder
 from models import GaussianComponent, GSModel
 from render_kernel import (
     extract_camera_centers,
+    get_ray_dirs_cam_pinhole_batched,
+    invert_world2camera,
     render,
 )
 from rgb_decoder import RGBDecoder
-from util import calculate_viewmats
 
 
 class RenderManager:
-    def __init__(self, model: str = "model.path") -> None:
+    def __init__(
+        self, model: str = "model.path", enable_torch_backends: bool = True
+    ) -> None:
+        self._configure_torch_backends(enable_torch_backends)
         self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
         self.model_path = model
         self.model = GSModel.load_from_pth(model).to_device(self.device)
@@ -48,7 +55,30 @@ class RenderManager:
         self.render_camera: bool = True
         self.render_lidar: bool = False
         self.rgb_decoder: RGBDecoder | None = None
+        self.mlp_decoder: MLPDecoder | None = None
         self.camera_id_to_index: Dict[str, int] = {}
+        self.lidar_id_to_index: Dict[str, int] = {}
+
+    @staticmethod
+    def _configure_torch_backends(enable: bool) -> None:
+        """配置PyTorch推理侧性能相关开关。
+
+        Args:
+            enable: 是否开启。
+                - 默认建议开启以提升CNN推理吞吐。
+                - 如需强制覆盖，可设置环境变量 RENDER_TORCH_BACKENDS=0/1。
+        """
+        env = os.environ.get("RENDER_TORCH_BACKENDS")
+        if env is not None:
+            enable = env == "1"
+        if not enable:
+            return
+
+        torch.backends.cudnn.benchmark = True
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
+        if hasattr(torch, "set_float32_matmul_precision"):
+            torch.set_float32_matmul_precision("high")
 
     def _setup_render_buffers(self) -> None:
         """预分配渲染buffers，消除每帧内存分配
@@ -210,12 +240,17 @@ class RenderManager:
             Ks = torch.tensor(intrinsics_list, dtype=torch.float32, device=self.device)
             camera_ids = [cam.id for cam in cameras]
             extrinsics_list = [cam.extrinsics for cam in cameras]
+            extrinsics_tensor = torch.tensor(
+                extrinsics_list, dtype=torch.float32, device=self.device
+            )
+            ray_dirs_cam = get_ray_dirs_cam_pinhole_batched(Ks, width, height)
             self.camera_data[resolution] = {
                 "camera_ids": camera_ids,
-                "extrinsics_list": extrinsics_list,
+                "extrinsics_tensor": extrinsics_tensor,
                 "intrinsics_tensor": Ks,
                 "width": width,
                 "height": height,
+                "ray_dirs_cam": ray_dirs_cam,
             }
 
     def _prepare_lidar_grids_from_raster_pts(
@@ -267,6 +302,63 @@ class RenderManager:
 
         return raster_pts, azimuths, elevations, elevation_boundaries
 
+    def _load_checkpoint_dict(self) -> dict:
+        """加载原始checkpoint字典，用于提取高斯组件之外的子模块权重。"""
+        return torch.load(self.model_path, map_location="cpu", weights_only=False)
+
+    def _get_mlp_decoder_state_and_num_lidars(
+        self, lidars: Optional[List[Lidar]]
+    ) -> Tuple[Optional[dict], int]:
+        """从checkpoint解析MLPDecoder权重以及其支持的lidar数量。"""
+        if not lidars:
+            return None, 0
+
+        ckpt = self._load_checkpoint_dict()
+        state = None
+        for key in ("MLPDecoder", "mlp_decoder", "lidar_decoder"):
+            value = ckpt.get(key, None) if isinstance(ckpt, dict) else None
+            if isinstance(value, dict):
+                state = value
+                break
+
+        if state is None:
+            return None, len(lidars)
+
+        params_state = state.get("params") if isinstance(state, dict) else None
+        if isinstance(params_state, dict) and "appearance_dim" in params_state:
+            app = params_state["appearance_dim"]
+            if isinstance(app, torch.Tensor) and app.ndim == 2:
+                return state, int(app.shape[0])
+        return state, len(lidars)
+
+    def _init_mlp_decoder(self, lidars: Optional[List[Lidar]]) -> None:
+        """初始化激光雷达的MLP解码器（可选）。"""
+        if not self.render_lidar or not lidars:
+            self.mlp_decoder = None
+            self.lidar_id_to_index = {}
+            return
+
+        self.lidar_id_to_index = {lidar.id: idx for idx, lidar in enumerate(lidars)}
+        mlp_state, num_lidars_ckpt = self._get_mlp_decoder_state_and_num_lidars(lidars)
+
+        if mlp_state is None:
+            self.mlp_decoder = None
+            return
+
+        if len(lidars) > num_lidars_ckpt:
+            raise ValueError(
+                "激光雷达数量超过MLPDecoder权重支持范围: "
+                f"lidars={len(lidars)} ckpt={num_lidars_ckpt}"
+            )
+
+        self.mlp_decoder = MLPDecoder.from_checkpoint_state(
+            metadata={"num_lidars": num_lidars_ckpt},
+            state_dict=mlp_state,
+            device=self.device,
+        )
+        self.mlp_decoder.lidar_id_map = self.lidar_id_to_index
+        self.mlp_decoder.eval()
+
     def _build_lidar_data(self, lidars: Optional[List[Lidar]]) -> None:
         if not lidars:
             return
@@ -298,8 +390,32 @@ class RenderManager:
             image_width = int(raster_pts.shape[1])
             image_height = int(raster_pts.shape[2])
 
+            angles = torch.deg2rad(raster_pts[..., :2])
+            az = angles[..., 0:1]
+            el = angles[..., 1:2]
+            ray_dirs_lidar = torch.cat(
+                [
+                    torch.cos(az) * torch.cos(el),
+                    torch.sin(az) * torch.cos(el),
+                    torch.sin(el),
+                ],
+                dim=-1,
+            )
+            ray_dirs_lidar = ray_dirs_lidar / (
+                ray_dirs_lidar.norm(dim=-1, keepdim=True) + 1e-8
+            )
+
+            gt_depth = raster_pts[..., 2].squeeze(0)
+            did_return_threshold = 1000.0
+            gt_did_return = gt_depth <= did_return_threshold
+            depth_valid_mask = (gt_depth > 0) & gt_did_return
+
+            extrinsics_tensor = torch.tensor(
+                [lidar.extrinsics], dtype=torch.float32, device=self.device
+            )
+
             self.lidar_data[lidar.id] = {
-                "extrinsics": lidar.extrinsics,
+                "extrinsics_tensor": extrinsics_tensor,
                 "azimuths": azimuths,
                 "elevations": elevations,
                 "elevation_boundaries": elevation_boundaries,
@@ -313,6 +429,9 @@ class RenderManager:
                 "max_elevation": max_elevation,
                 "azimuth_resolution": azimuth_resolution,
                 "raster_pts": raster_pts,
+                "ray_dirs_lidar": ray_dirs_lidar,
+                "pano_dirs_lidar": ray_dirs_lidar.squeeze(0),
+                "depth_valid_mask": depth_valid_mask,
             }
 
     def init(self, params: InitParams) -> InitResp:
@@ -336,7 +455,47 @@ class RenderManager:
         self._init_rgb_decoder(params.cameras, num_cams_ckpt, rgb_decoder_state)
         self._build_camera_data()
         self._build_lidar_data(params.lidars)
+        self._init_mlp_decoder(params.lidars)
         return InitResp(init_status=True)
+
+    def _calculate_viewmats(
+        self,
+        extrinsics_tensor: torch.Tensor,
+        ego_heading: float,
+        ego_position: torch.Tensor,
+    ) -> torch.Tensor:
+        device = ego_position.device
+        cos_h = math.cos(float(ego_heading))
+        sin_h = math.sin(float(ego_heading))
+        ego_pose = torch.tensor(
+            [
+                [cos_h, -sin_h, 0.0, 0.0],
+                [sin_h, cos_h, 0.0, 0.0],
+                [0.0, 0.0, 1.0, 0.0],
+                [0.0, 0.0, 0.0, 1.0],
+            ],
+            device=device,
+            dtype=torch.float32,
+        )
+        ego_pose = ego_pose.clone()
+        ego_pose[:3, 3] = ego_position
+
+        c2w = torch.matmul(ego_pose.unsqueeze(0), extrinsics_tensor)
+
+        R = c2w[:, :3, :3]
+        t = c2w[:, :3, 3]
+        Rt = R.transpose(-2, -1)
+        t_inv = -(Rt @ t.unsqueeze(-1)).squeeze(-1)
+
+        w2c = (
+            torch
+            .eye(4, device=device, dtype=torch.float32)
+            .expand(c2w.shape[0], 4, 4)
+            .clone()
+        )
+        w2c[:, :3, :3] = Rt
+        w2c[:, :3, 3] = t_inv
+        return w2c
 
     def render_frame(self, params: FrameParams) -> FrameResp:
         """渲染接口，每帧调用"""
@@ -398,12 +557,26 @@ class RenderManager:
         for resolution, cam_data in self.camera_data.items():
             # 直接使用预计算的数据，无需运行时转换
             camera_ids = cam_data["camera_ids"]
-            extrinsics_list = cam_data["extrinsics_list"]
+            extrinsics_tensor = cam_data["extrinsics_tensor"]
             Ks = cam_data["intrinsics_tensor"]
             width = cam_data["width"]
             height = cam_data["height"]
 
-            viewmats = calculate_viewmats(extrinsics_list, ego_heading, ego_position)
+            viewmats = self._calculate_viewmats(
+                extrinsics_tensor, ego_heading, ego_position
+            )
+
+            ray_dirs_world = None
+            if self.rgb_decoder is not None and getattr(
+                self.rgb_decoder, "use_ray_dirs", False
+            ):
+                dirs_cam = cam_data["ray_dirs_cam"]
+                c2w = invert_world2camera(viewmats)
+                R = c2w[:, :3, :3]
+                C = int(dirs_cam.shape[0])
+                dirs_flat = dirs_cam.view(C, -1, 3)
+                ray_world_flat = torch.bmm(dirs_flat, R.transpose(1, 2))
+                ray_dirs_world = ray_world_flat.view(C, height, width, 3)
 
             # 先渲染前景（background + actors，不包含 sky）
             batch_colors, batch_alphas = render(
@@ -418,6 +591,7 @@ class RenderManager:
                 height,
                 rgb_decoder=self.rgb_decoder,
                 camera_ids=camera_ids,
+                ray_dirs_world=ray_dirs_world,
             )
 
             # 再渲染 sky，并用前景 alpha 做合成：rgb = fg + sky * (1 - acc)
@@ -434,6 +608,7 @@ class RenderManager:
                     height,
                     rgb_decoder=self.rgb_decoder,
                     camera_ids=camera_ids,
+                    ray_dirs_world=ray_dirs_world,
                 )
                 batch_colors = batch_colors + sky_colors * (1 - batch_alphas)
 
@@ -462,12 +637,20 @@ class RenderManager:
         ) = render_params
 
         for lidar_id, lidar_cfg in self.lidar_data.items():
-            viewmats = calculate_viewmats(
-                [lidar_cfg["extrinsics"]], ego_heading, ego_position
+            extrinsics_tensor = lidar_cfg["extrinsics_tensor"]
+            viewmats = self._calculate_viewmats(
+                extrinsics_tensor, ego_heading, ego_position
             )
-            lidar_features = self._compute_lidar_features_from_colors(
-                render_colors, render_means, viewmats
-            )
+            if self.mlp_decoder is not None:
+                lidar_features = self._compute_lidar_mlp_features_from_colors(
+                    render_colors,
+                    feature_dim=self.mlp_decoder.feature_dim,
+                    batch_size=viewmats.shape[0],
+                )
+            else:
+                lidar_features = self._compute_lidar_features_from_colors(
+                    render_colors, render_means, viewmats
+                )
             raster_pts = lidar_cfg["raster_pts"]
 
             near_plane = 0.2
@@ -518,12 +701,48 @@ class RenderManager:
                 )
             )
 
-            # 后处理：Mask处理与深度滤波
-            out = self._process_lidar_output(raster_pts, rendered_feat)
+            if self.mlp_decoder is not None:
+                ray_dirs_world = None
+                ray_dirs_lidar = lidar_cfg.get("ray_dirs_lidar", None)
+                if isinstance(ray_dirs_lidar, torch.Tensor):
+                    lidar_to_world = invert_world2camera(viewmats)
+                    R = lidar_to_world[:, :3, :3]
+                    B, H, W = (
+                        int(ray_dirs_lidar.shape[0]),
+                        int(ray_dirs_lidar.shape[1]),
+                        int(ray_dirs_lidar.shape[2]),
+                    )
+                    dirs_flat = ray_dirs_lidar.view(B, -1, 3)
+                    ray_world_flat = torch.bmm(dirs_flat, R.transpose(1, 2))
+                    ray_dirs_world = ray_world_flat.view(B, H, W, 3)
+
+                decoded_intensity, decoded_ray_drop_logits = self.mlp_decoder(
+                    lidar_id,
+                    rendered_feat[..., :-1],
+                    raster_pts,
+                    viewmats,
+                    ray_dirs_world=ray_dirs_world,
+                )
+                decoded_rendered = torch.cat(
+                    [
+                        decoded_intensity,
+                        decoded_ray_drop_logits,
+                        rendered_feat[..., -1:],
+                    ],
+                    dim=-1,
+                )
+                out = self._process_lidar_output(raster_pts, decoded_rendered)
+            else:
+                out = self._process_lidar_output(raster_pts, rendered_feat)
 
             from util import pano_to_lidar_with_intensities
 
-            pred, gt = pano_to_lidar_with_intensities(raster_pts, out)
+            pred = pano_to_lidar_with_intensities(
+                raster_pts,
+                out,
+                directions=lidar_cfg.get("pano_dirs_lidar", None),
+                depth_valid_mask=lidar_cfg.get("depth_valid_mask", None),
+            )
             lidars[lidar_id] = pred
 
         return lidars
@@ -647,3 +866,49 @@ class RenderManager:
 
         feats = spherical_harmonics(1, dirs, shs)  # [C, N, 3]
         return feats[..., :2]
+
+    def _compute_lidar_mlp_features_from_colors(
+        self,
+        colors: torch.Tensor,
+        feature_dim: int,
+        batch_size: int = 1,
+    ) -> torch.Tensor:
+        """从高斯的colors中构建供MLPDecoder使用的lidar_features。
+
+        约定：
+        - colors 形状为 [N, 4, C]，其中 C 的前3个通道为相机渲染(RGB)；从第3个通道开始视为额外特征。
+        - 将额外特征在 [K=4] 维度上展平为每个高斯的 1D feature 向量，并裁剪/补零到 feature_dim。
+
+        Args:
+            colors: [N, 4, C] 的特征张量。
+            feature_dim: 目标特征维度（与MLPDecoder期望一致）。
+            batch_size: 输出批大小，通常等于 viewmats.shape[0]。
+
+        Returns:
+            lidar_features: [batch_size, N, feature_dim]
+        """  # noqa: E501
+        if feature_dim <= 0:
+            raise ValueError(f"feature_dim必须为正数，实际为{feature_dim}")
+
+        device = colors.device
+        dtype = colors.dtype
+        if colors.dim() != 3:
+            N = int(colors.shape[0]) if hasattr(colors, "shape") else 0
+            return torch.zeros(batch_size, N, feature_dim, device=device, dtype=dtype)
+
+        N = colors.shape[0]
+        C = colors.shape[-1]
+        if C <= 3:
+            return torch.zeros(batch_size, N, feature_dim, device=device, dtype=dtype)
+
+        extra = colors[..., 3:]  # [N, 4, C-3]
+        flat = extra.reshape(N, -1)  # [N, 4*(C-3)]
+
+        if flat.shape[1] < feature_dim:
+            pad = torch.zeros(
+                N, feature_dim - flat.shape[1], device=device, dtype=dtype
+            )
+            flat = torch.cat([flat, pad], dim=-1)
+        feat = flat[:, :feature_dim]
+
+        return feat.unsqueeze(0).expand(batch_size, -1, -1).contiguous()

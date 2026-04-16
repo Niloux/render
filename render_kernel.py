@@ -1,4 +1,5 @@
 import math
+import os
 from typing import List, Optional, Sequence
 
 import torch
@@ -16,6 +17,10 @@ from gsplat.cuda._wrapper import (
 )
 
 NATIVE = True
+
+_RENDER_TILE_SIZE = int(os.environ.get("RENDER_TILE_SIZE", "16"))
+_RENDER_RASTERIZE_MODE = os.environ.get("RENDER_RASTERIZE_MODE", "antialiased")
+_RENDER_RADIUS_CLIP = float(os.environ.get("RENDER_RADIUS_CLIP", "3.0"))
 
 
 def extract_camera_centers(viewmats: torch.Tensor):
@@ -54,10 +59,54 @@ def invert_world2camera(viewmats: torch.Tensor) -> torch.Tensor:
     return c2w
 
 
-def get_ray_dirs_pinhole_batched(
-    Ks: torch.Tensor, width: int, height: int, c2w: torch.Tensor
+def compute_lidar_ray_dirs_world(
+    raster_pts: torch.Tensor, viewmats: torch.Tensor
 ) -> torch.Tensor:
-    """为每个相机生成归一化的世界系射线方向，输出形状为[C, H, W, 3]。"""
+    """根据raster_pts中的(azimuth,elevation)计算世界系射线方向。
+
+    Args:
+        raster_pts: [B, H, W, D] 或 [H, W, D]，其中前两维为 azimuth/elevation（单位：度）。
+        viewmats: [B, 4, 4] 的 World2Lidar 变换矩阵。
+
+    Returns:
+        ray_dirs_world: [B, H, W, 3] 的单位方向向量。
+    """  # noqa: E501
+    if raster_pts.dim() == 3:
+        raster_pts = raster_pts.unsqueeze(0)
+    if viewmats.dim() == 2:
+        viewmats = viewmats.unsqueeze(0)
+
+    if raster_pts.dim() != 4 or viewmats.dim() != 3:
+        raise ValueError(
+            f"raster_pts/viewmats维度不匹配: raster_pts={tuple(raster_pts.shape)} viewmats={tuple(viewmats.shape)}"  # noqa: E501
+        )
+
+    angles = torch.deg2rad(raster_pts[..., :2])
+    az = angles[..., 0:1]
+    el = angles[..., 1:2]
+
+    dirs_lidar = torch.cat(
+        [
+            torch.cos(az) * torch.cos(el),
+            torch.sin(az) * torch.cos(el),
+            torch.sin(el),
+        ],
+        dim=-1,
+    )
+
+    lidar_to_world = invert_world2camera(viewmats)
+    R = lidar_to_world[:, :3, :3]  # [B, 3, 3]
+    ray_dirs_world = (
+        R.reshape(R.shape[0], 1, 1, 3, 3) @ dirs_lidar.unsqueeze(-1)
+    ).squeeze(-1)
+    ray_dirs_world = ray_dirs_world / (ray_dirs_world.norm(dim=-1, keepdim=True) + 1e-8)
+    return ray_dirs_world
+
+
+def get_ray_dirs_cam_pinhole_batched(
+    Ks: torch.Tensor, width: int, height: int
+) -> torch.Tensor:
+    """为每个相机生成归一化的相机系射线方向，输出形状为[C, H, W, 3]。"""
     device = Ks.device
     dtype = Ks.dtype
     C = Ks.shape[0]
@@ -77,11 +126,20 @@ def get_ray_dirs_pinhole_batched(
     ys = ys.expand(C, height, width)
 
     dirs_cam = torch.stack([xs, -ys, -torch.ones_like(xs)], dim=-1)  # [C, H, W, 3]
+    dirs_cam = dirs_cam / (dirs_cam.norm(dim=-1, keepdim=True) + 1e-8)
+    return dirs_cam
+
+
+def get_ray_dirs_pinhole_batched(
+    Ks: torch.Tensor, width: int, height: int, c2w: torch.Tensor
+) -> torch.Tensor:
+    """为每个相机生成归一化的世界系射线方向，输出形状为[C, H, W, 3]。"""
+    dirs_cam = get_ray_dirs_cam_pinhole_batched(Ks, width, height)
+    C = dirs_cam.shape[0]
     dirs_cam = dirs_cam.view(C, -1, 3)
 
     R = c2w[:, :3, :3]  # [C, 3, 3]
     dirs_world = torch.bmm(dirs_cam, R.transpose(1, 2))
-    dirs_world = dirs_world / (dirs_world.norm(dim=-1, keepdim=True) + 1e-8)
     return dirs_world.view(C, height, width, 3)
 
 
@@ -97,6 +155,7 @@ def render_gaussian_splatting(
     img_height,
     rgb_decoder=None,
     camera_ids: Optional[Sequence[str]] = None,
+    ray_dirs_world: Optional[torch.Tensor] = None,
 ):
     """
     执行高斯点云渲染的核心函数
@@ -194,15 +253,20 @@ def render_gaussian_splatting(
         )
 
     features = render_colors
-    if getattr(rgb_decoder, "use_ray_dirs", False):
+    if getattr(rgb_decoder, "use_ray_dirs", False) and ray_dirs_world is None:
         c2w = invert_world2camera(viewmats)
-        ray_dirs = get_ray_dirs_pinhole_batched(Ks, img_width, img_height, c2w)
-        features = torch.cat([features, ray_dirs], dim=-1)
+        ray_dirs_world = get_ray_dirs_pinhole_batched(Ks, img_width, img_height, c2w)
 
-    decoded: List[torch.Tensor] = []
-    for cam_idx, cam_id in enumerate(camera_ids):
-        decoded.append(rgb_decoder(cam_id, features[cam_idx]))
-    rendered_rgb = torch.stack(decoded, dim=0)
+    if hasattr(rgb_decoder, "forward_batched"):
+        rendered_rgb = rgb_decoder.forward_batched(
+            camera_ids, features, ray_dirs_world=ray_dirs_world
+        )
+    else:
+        decoded: List[torch.Tensor] = []
+        for cam_idx, cam_id in enumerate(camera_ids):
+            ray = ray_dirs_world[cam_idx] if (ray_dirs_world is not None) else None
+            decoded.append(rgb_decoder(cam_id, features[cam_idx], ray_dirs_world=ray))
+        rendered_rgb = torch.stack(decoded, dim=0)
     return rendered_rgb, render_alphas
 
 
@@ -218,6 +282,7 @@ def render_native(
     img_height,
     rgb_decoder=None,
     camera_ids: Optional[Sequence[str]] = None,
+    ray_dirs_world: Optional[torch.Tensor] = None,
 ):
     """原生渲染接口。
 
@@ -246,9 +311,9 @@ def render_native(
             far_plane=1000,
             sh_degree=1,
             packed=True,
-            tile_size=16,
-            radius_clip=3.0,
-            rasterize_mode="antialiased",
+            tile_size=_RENDER_TILE_SIZE,
+            radius_clip=_RENDER_RADIUS_CLIP,
+            rasterize_mode=_RENDER_RASTERIZE_MODE,
         )
         return render_colors, render_alphas
 
@@ -282,21 +347,26 @@ def render_native(
         far_plane=1000,
         sh_degree=None,
         packed=True,
-        tile_size=16,
-        radius_clip=3.0,
-        rasterize_mode="antialiased",
+        tile_size=_RENDER_TILE_SIZE,
+        radius_clip=_RENDER_RADIUS_CLIP,
+        rasterize_mode=_RENDER_RASTERIZE_MODE,
     )
 
     features = render_feats
-    if getattr(rgb_decoder, "use_ray_dirs", False):
+    if getattr(rgb_decoder, "use_ray_dirs", False) and ray_dirs_world is None:
         c2w = invert_world2camera(viewmats)
-        ray_dirs = get_ray_dirs_pinhole_batched(Ks, img_width, img_height, c2w)
-        features = torch.cat([features, ray_dirs], dim=-1)
+        ray_dirs_world = get_ray_dirs_pinhole_batched(Ks, img_width, img_height, c2w)
 
-    decoded: List[torch.Tensor] = []
-    for cam_idx, cam_id in enumerate(camera_ids):
-        decoded.append(rgb_decoder(cam_id, features[cam_idx]))
-    rendered_rgb = torch.stack(decoded, dim=0)
+    if hasattr(rgb_decoder, "forward_batched"):
+        rendered_rgb = rgb_decoder.forward_batched(
+            camera_ids, features, ray_dirs_world=ray_dirs_world
+        )
+    else:
+        decoded: List[torch.Tensor] = []
+        for cam_idx, cam_id in enumerate(camera_ids):
+            ray = ray_dirs_world[cam_idx] if (ray_dirs_world is not None) else None
+            decoded.append(rgb_decoder(cam_id, features[cam_idx], ray_dirs_world=ray))
+        rendered_rgb = torch.stack(decoded, dim=0)
     return rendered_rgb, render_alphas
 
 
@@ -312,6 +382,7 @@ def render(
     img_height,
     rgb_decoder=None,
     camera_ids: Optional[Sequence[str]] = None,
+    ray_dirs_world: Optional[torch.Tensor] = None,
 ):
     if NATIVE:
         return render_native(
@@ -326,6 +397,7 @@ def render(
             img_height,
             rgb_decoder=rgb_decoder,
             camera_ids=camera_ids,
+            ray_dirs_world=ray_dirs_world,
         )
     else:
         return render_gaussian_splatting(
@@ -340,6 +412,7 @@ def render(
             img_height,
             rgb_decoder=rgb_decoder,
             camera_ids=camera_ids,
+            ray_dirs_world=ray_dirs_world,
         )
 
 

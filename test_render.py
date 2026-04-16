@@ -108,14 +108,18 @@ def _validate_matrix(mat: Any, rows: int, cols: int, name: str) -> List[List[flo
     return out
 
 
-def save_point_cloud_as_ply(save_path: str, point_cloud: torch.Tensor | np.ndarray) -> None:  # noqa: E501
+def save_point_cloud_as_ply(
+    save_path: str, point_cloud: torch.Tensor | np.ndarray
+) -> None:  # noqa: E501
     if isinstance(point_cloud, torch.Tensor):
         points = point_cloud.detach().cpu().numpy()
     else:
         points = np.asarray(point_cloud)
 
     if points.ndim != 2 or points.shape[1] not in (3, 4):
-        raise ValueError(f"point_cloud 期望形状为 [N,3] 或 [N,4]，实际为 {points.shape}")  # noqa: E501
+        raise ValueError(
+            f"point_cloud 期望形状为 [N,3] 或 [N,4]，实际为 {points.shape}"
+        )  # noqa: E501
 
     points = points.astype(np.float32, copy=False)
     finite_mask = np.isfinite(points).all(axis=1)
@@ -123,7 +127,12 @@ def save_point_cloud_as_ply(save_path: str, point_cloud: torch.Tensor | np.ndarr
 
     has_intensity = points.shape[1] == 4
     if has_intensity:
-        dtype = np.dtype([("x", "<f4"), ("y", "<f4"), ("z", "<f4"), ("intensity", "<f4")])  # noqa: E501
+        dtype = np.dtype([
+            ("x", "<f4"),
+            ("y", "<f4"),
+            ("z", "<f4"),
+            ("intensity", "<f4"),
+        ])  # noqa: E501
         packed = np.empty(points.shape[0], dtype=dtype)
         packed["x"] = points[:, 0]
         packed["y"] = points[:, 1]
@@ -141,11 +150,7 @@ def save_point_cloud_as_ply(save_path: str, point_cloud: torch.Tensor | np.ndarr
         packed["x"] = points[:, 0]
         packed["y"] = points[:, 1]
         packed["z"] = points[:, 2]
-        properties = (
-            "property float x\n"
-            "property float y\n"
-            "property float z\n"
-        )
+        properties = "property float x\nproperty float y\nproperty float z\n"
 
     header = (
         "ply\n"
@@ -317,7 +322,9 @@ def create_test_scenario(
     cameras: List[Camera] = []
     lidars: List[Lidar] = []
 
-    if config.get("sensors_json") and (render_config["render_camera"] or render_config["render_lidar"]):  # noqa: E501
+    if config.get("sensors_json") and (
+        render_config["render_camera"] or render_config["render_lidar"]
+    ):  # noqa: E501
         loaded_cameras, loaded_lidars = load_sensors_from_json(
             config["sensors_json"],
             default_width=config["resolution"][0],
