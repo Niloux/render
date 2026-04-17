@@ -31,6 +31,7 @@ class GSModel:
         self.map_center: Optional[torch.Tensor] = None
         self.sky_center: Optional[torch.Tensor] = None
         self.sky_radius: Optional[torch.Tensor] = None
+        self.sky_cubemap: Optional[torch.Tensor] = None
 
     @classmethod
     def load_from_pth(cls, pth_path: Union[str, Path]) -> "GSModel":  # noqa: C901
@@ -58,12 +59,22 @@ class GSModel:
 
         try:
             model.map_center = _as_f32_tensor(checkpoint["center_point"])  # [3]
+        except KeyError as e:
+            raise KeyError("pth缺少场景参数键: 需要center_point") from e
+
+        if "sphere_center" in checkpoint and "sphere_radius" in checkpoint:
             model.sky_center = _as_f32_tensor(checkpoint["sphere_center"])  # [3]
             model.sky_radius = _as_f32_tensor(checkpoint["sphere_radius"])  # [1]
-        except KeyError as e:
-            raise KeyError(
-                "pth缺少场景参数键: 需要center_point/sphere_center/sphere_radius"
-            ) from e
+
+        sky_cubemap = checkpoint.get("sky_cubemap")
+        if (
+            isinstance(sky_cubemap, dict)
+            and "params" in sky_cubemap
+            and hasattr(sky_cubemap["params"], "get")
+        ):
+            cube = sky_cubemap["params"].get("sky_cube_map")
+            if cube is not None:
+                model.sky_cubemap = _as_f32_tensor(cube)
 
         # 加载各个组件
         for name, data in checkpoint.items():
@@ -74,6 +85,7 @@ class GSModel:
                 "center_point",
                 "sphere_center",
                 "sphere_radius",
+                "sky_cubemap",
             ):
                 continue
 
@@ -246,6 +258,9 @@ class GSModel:
         )
         new_model.sky_radius = (
             self.sky_radius.to(device) if self.sky_radius is not None else None
+        )
+        new_model.sky_cubemap = (
+            self.sky_cubemap.to(device) if self.sky_cubemap is not None else None
         )
 
         for name, component in self.components.items():

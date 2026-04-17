@@ -35,8 +35,12 @@ class RenderManager:
         self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
         self.model_path = model
         self.model = GSModel.load_from_pth(model).to_device(self.device)
-        self.background: GaussianComponent = self.model.get_component("background")
-        self.sky: GaussianComponent = self.model.get_component("sky")
+        background = self.model.get_component("background")
+        if background is None:
+            raise ValueError("pth中缺少background组件，无法渲染")
+        self.background: GaussianComponent = background
+        self.sky: GaussianComponent | None = self.model.get_component("sky")
+        self.sky_cubemap: torch.Tensor | None = getattr(self.model, "sky_cubemap", None)
         self.actors: List[GaussianComponent] = self.model.get_components_by_type("obj")
         map_center = getattr(self.model, "map_center", None)
         if map_center is None:
@@ -94,7 +98,9 @@ class RenderManager:
         self.static_points = self.static_data.means.shape[0]
         color_channels = self.static_data.colors.shape[2]
 
-        self.sky_data = GaussianData.from_components([self.sky])
+        self.sky_data = (
+            GaussianData.from_components([self.sky]) if self.sky is not None else None
+        )
         self.sky_points = self.sky_data.means.shape[0] if self.sky_data else 0
 
         # 预计算最大可能的动态点数（假设所有车辆类型同时出现）
@@ -146,18 +152,18 @@ class RenderManager:
         if not vehicles:
             return 0
 
-        # 快速失败：批量验证所有车辆类型
-        unknown_types = [v.type for v in vehicles if v.type not in self.actor_map]
-        if unknown_types:
-            raise ValueError(
-                f"Unknown vehicle types: {unknown_types}. Available: {list(self.actor_map.keys())}"  # noqa: E501
-            )
+        if not self.actor_map:
+            return 0
+
+        known_vehicles = [v for v in vehicles if v.type in self.actor_map]
+        if not known_vehicles:
+            return 0
 
         # 直接更新buffer的动态部分，从static_points开始
         start_idx = self.static_points
         device = self.device
 
-        for v in vehicles:
+        for v in known_vehicles:
             # 预先转换位置数据，避免重复计算
             heading = v.yaw
             position = (
@@ -567,9 +573,11 @@ class RenderManager:
             )
 
             ray_dirs_world = None
-            if self.rgb_decoder is not None and getattr(
-                self.rgb_decoder, "use_ray_dirs", False
-            ):
+            need_ray_dirs = (self.sky_cubemap is not None) or (
+                self.rgb_decoder is not None
+                and getattr(self.rgb_decoder, "use_ray_dirs", False)
+            )
+            if need_ray_dirs:
                 dirs_cam = cam_data["ray_dirs_cam"]
                 c2w = invert_world2camera(viewmats)
                 R = c2w[:, :3, :3]
@@ -611,11 +619,120 @@ class RenderManager:
                     ray_dirs_world=ray_dirs_world,
                 )
                 batch_colors = batch_colors + sky_colors * (1 - batch_alphas)
+            elif self.sky_cubemap is not None:
+                if ray_dirs_world is None:
+                    raise RuntimeError(
+                        "cubemap天空渲染需要ray_dirs_world，但当前未生成"
+                    )
+                sky_colors = self._render_sky_cubemap(ray_dirs_world)
+                batch_colors = batch_colors + sky_colors * (1 - batch_alphas)
 
             batch_colors = (batch_colors.clamp(0, 1) * 255).to(torch.uint8)
             for cam_id, image in zip(camera_ids, batch_colors):
                 images[cam_id] = image
         return images
+
+    def _render_sky_cubemap(self, ray_dirs_world: torch.Tensor) -> torch.Tensor:
+        """基于 cubemap 纹理渲染天空颜色。
+
+        Args:
+            ray_dirs_world: 每个像素的世界系射线方向，形状为 [C, H, W, 3]。
+
+        Returns:
+            sky_colors: 天空颜色，形状为 [C, H, W, 3]，范围约为 [0, 1]。
+        """
+        if self.sky_cubemap is None:
+            raise ValueError("未加载sky_cubemap，无法进行cubemap天空渲染")
+
+        cubemap = self.sky_cubemap
+        if cubemap.dim() != 4 or cubemap.shape[0] != 6 or cubemap.shape[-1] != 3:
+            raise ValueError(
+                f"sky_cubemap期望形状为[6,R,R,3]，实际为{tuple(cubemap.shape)}"
+            )
+
+        dirs = torch.nn.functional.normalize(ray_dirs_world, dim=-1, eps=1e-8)
+        C, H, W, _ = dirs.shape
+        dirs_flat = dirs.reshape(-1, 3)
+
+        x = dirs_flat[:, 0]
+        y = dirs_flat[:, 1]
+        z = dirs_flat[:, 2]
+        ax = x.abs()
+        ay = y.abs()
+        az = z.abs()
+
+        max_axis = torch.stack((ax, ay, az), dim=-1).argmax(dim=-1)
+        is_x = max_axis == 0
+        is_y = max_axis == 1
+        is_z = max_axis == 2
+
+        face = torch.empty_like(max_axis, dtype=torch.long)
+        gx = torch.empty_like(x)
+        gy = torch.empty_like(y)
+
+        pos_x = is_x & (x >= 0)
+        neg_x = is_x & (x < 0)
+        pos_y = is_y & (y >= 0)
+        neg_y = is_y & (y < 0)
+        pos_z = is_z & (z >= 0)
+        neg_z = is_z & (z < 0)
+
+        face[pos_x] = 0
+        a = ax[pos_x].clamp_min(1e-8)
+        gx[pos_x] = (-z[pos_x]) / a
+        gy[pos_x] = (-y[pos_x]) / a
+
+        face[neg_x] = 1
+        a = ax[neg_x].clamp_min(1e-8)
+        gx[neg_x] = (z[neg_x]) / a
+        gy[neg_x] = (-y[neg_x]) / a
+
+        face[pos_y] = 2
+        a = ay[pos_y].clamp_min(1e-8)
+        gx[pos_y] = (x[pos_y]) / a
+        gy[pos_y] = (z[pos_y]) / a
+
+        face[neg_y] = 3
+        a = ay[neg_y].clamp_min(1e-8)
+        gx[neg_y] = (x[neg_y]) / a
+        gy[neg_y] = (-z[neg_y]) / a
+
+        face[pos_z] = 4
+        a = az[pos_z].clamp_min(1e-8)
+        gx[pos_z] = (x[pos_z]) / a
+        gy[pos_z] = (-y[pos_z]) / a
+
+        face[neg_z] = 5
+        a = az[neg_z].clamp_min(1e-8)
+        gx[neg_z] = (-x[neg_z]) / a
+        gy[neg_z] = (-y[neg_z]) / a
+
+        gx = gx.clamp(-1.0, 1.0)
+        gy = gy.clamp(-1.0, 1.0)
+
+        tex = cubemap.sigmoid()
+        R = int(tex.shape[1])
+        px = (gx + 1.0) * 0.5 * (R - 1)
+        py = (gy + 1.0) * 0.5 * (R - 1)
+
+        x0 = px.floor().to(torch.long).clamp(0, R - 1)
+        y0 = py.floor().to(torch.long).clamp(0, R - 1)
+        x1 = (x0 + 1).clamp(0, R - 1)
+        y1 = (y0 + 1).clamp(0, R - 1)
+
+        wx = (px - x0.to(px.dtype)).unsqueeze(-1)
+        wy = (py - y0.to(py.dtype)).unsqueeze(-1)
+
+        c00 = tex[face, y0, x0]
+        c10 = tex[face, y0, x1]
+        c01 = tex[face, y1, x0]
+        c11 = tex[face, y1, x1]
+
+        c0 = c00 * (1 - wx) + c10 * wx
+        c1 = c01 * (1 - wx) + c11 * wx
+        colors = c0 * (1 - wy) + c1 * wy
+
+        return colors.view(C, H, W, 3)
 
     def _render_lidars(
         self,
