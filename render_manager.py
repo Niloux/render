@@ -807,7 +807,8 @@ class RenderManager:
                     rolling_shutter_time=rolling_shutter_time,
                     near_plane=near_plane,
                     far_plane=far_plane,
-                    radius_clip=0.0,
+                    # 实测radius_clip为0.5时lidar渲染速率较快且不太影响渲染结果
+                    radius_clip=0.5,
                     sparse_grad=False,
                     absgrad=True,
                     rasterize_mode="antialiased",
