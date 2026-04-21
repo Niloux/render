@@ -268,6 +268,44 @@ class RGBDecoderCNN(torch.nn.Module):
         ray_dirs: torch.Tensor | None,
         orig_dim: int,
     ) -> torch.Tensor:
+        first = self.net[0]
+        if isinstance(first.res_branch, nn.Identity):
+            B, H, W, _ = spec_in.shape
+            spec_full = spec_in
+
+            if ray_dirs is not None:
+                if ray_dirs.dim() == 3:
+                    ray_dirs = ray_dirs.unsqueeze(0)
+                if ray_dirs.dim() != 4 or int(ray_dirs.shape[-1]) != 3:
+                    raise ValueError(
+                        f"ray_dirs形状必须为[H,W,3]或[B,H,W,3]，实际为{tuple(ray_dirs.shape)}"
+                    )
+                if (
+                    int(ray_dirs.shape[0]) != int(B)
+                    or int(ray_dirs.shape[1]) != int(H)
+                    or int(ray_dirs.shape[2]) != int(W)
+                ):
+                    raise ValueError(
+                        "ray_dirs形状与spec_in不一致: "
+                        f"ray_dirs={tuple(ray_dirs.shape)} spec_in={(int(B), int(H), int(W))}"
+                    )
+                ray_nhwc = ray_dirs.to(device=spec_in.device, dtype=spec_in.dtype)
+                spec_full = torch.cat([spec_full, ray_nhwc], dim=-1)
+
+            if embedding is not None:
+                if embedding.dim() == 1:
+                    embedding = embedding.unsqueeze(0)
+                if embedding.dim() != 2 or int(embedding.shape[0]) != int(B):
+                    raise ValueError(
+                        "embedding形状必须为[Emb]或[B,Emb]且与spec_in的batch一致，"
+                        f"实际为{tuple(embedding.shape)} spec_in_batch={int(B)}"
+                    )
+                emb = embedding.to(device=spec_in.device, dtype=spec_in.dtype)
+                emb_nhwc = emb.view(int(B), 1, 1, -1).expand(int(B), int(H), int(W), -1)
+                spec_full = torch.cat([spec_full, emb_nhwc], dim=-1)
+
+            return self._forward_plain(albedo, spec_full, orig_dim)
+
         emb, emb_dim = self._prepare_embedding(embedding, spec_in)
         ray, ray_dim = self._prepare_ray_dirs(ray_dirs, spec_in)
 
@@ -275,7 +313,6 @@ class RGBDecoderCNN(torch.nn.Module):
         if spec_base.is_cuda:
             spec_base = spec_base.contiguous(memory_format=torch.channels_last)
 
-        first = self.net[0]
         conv0 = first.main_branch[0]
 
         in_full = int(conv0.in_channels)
@@ -339,6 +376,11 @@ class RGBDecoder(nn.Module):
             int(appearance.shape[1]) if isinstance(appearance, torch.Tensor) else 0
         )
 
+        default_hidden_dim = int(os.environ.get("RENDER_RGB_DECODER_HIDDEN_DIM", "16"))
+        default_num_hidden_blocks = int(
+            os.environ.get("RENDER_RGB_DECODER_NUM_HIDDEN_BLOCKS", "1")
+        )
+
         conv_w = params.get("rgb_decoder.net.0.main_branch.0.weight", None)
         if not isinstance(conv_w, torch.Tensor) or conv_w.ndim != 4:
             return {
@@ -346,6 +388,8 @@ class RGBDecoder(nn.Module):
                 "use_app_embed": bool(appearance_dim),
                 "use_ray_dirs": True,
                 "sh_degree": 1,
+                "hidden_dim": default_hidden_dim,
+                "num_hidden_blocks": default_num_hidden_blocks,
             }
 
         in_channels = int(conv_w.shape[1])
@@ -368,11 +412,29 @@ class RGBDecoder(nn.Module):
                 use_ray_dirs = cand_ray
                 break
 
+        hidden_dim = int(conv_w.shape[0])
+
+        last_layer_idx = -1
+        for k in params.keys():
+            if not isinstance(k, str):
+                continue
+            parts = k.split(".")
+            if len(parts) == 4 and parts[0] == "rgb_decoder" and parts[1] == "net":
+                if parts[2].isdigit() and parts[3] == "weight":
+                    last_layer_idx = max(last_layer_idx, int(parts[2]))
+        num_hidden_blocks = (
+            max(0, last_layer_idx - 1)
+            if last_layer_idx >= 0
+            else default_num_hidden_blocks
+        )
+
         return {
             "appearance_dim": appearance_dim,
             "use_app_embed": use_app_embed,
             "use_ray_dirs": use_ray_dirs,
             "sh_degree": sh_degree,
+            "hidden_dim": hidden_dim,
+            "num_hidden_blocks": num_hidden_blocks,
         }
 
     @classmethod
@@ -399,6 +461,8 @@ class RGBDecoder(nn.Module):
             appearance_dim=cfg["appearance_dim"],
             use_ray_dirs=cfg["use_ray_dirs"],
             sh_degree=cfg["sh_degree"],
+            decoder_hidden_dim=int(cfg.get("hidden_dim", 16)),
+            decoder_num_hidden_blocks=int(cfg.get("num_hidden_blocks", 1)),
         )
         inst.load_state_dict(state_dict, strict=True)
         return inst
@@ -406,13 +470,14 @@ class RGBDecoder(nn.Module):
     def __init__(
         self,
         metadata,
-        # device: torch.device | str | None = None,
         device: Union[torch.device, str, None] = None,
         use_app_embed: bool = True,
         mode: str = "sensor",
         appearance_dim: int = 8,
         use_ray_dirs: bool = True,
         sh_degree: int = 1,
+        decoder_hidden_dim: int | None = None,
+        decoder_num_hidden_blocks: int | None = None,
     ):
         super().__init__()
         if device is None:
@@ -441,11 +506,20 @@ class RGBDecoder(nn.Module):
             input_dim = feature_dim + appearance_dim
         else:
             input_dim = feature_dim
+        if decoder_hidden_dim is None:
+            decoder_hidden_dim = int(
+                os.environ.get("RENDER_RGB_DECODER_HIDDEN_DIM", "16")
+            )
+        if decoder_num_hidden_blocks is None:
+            decoder_num_hidden_blocks = int(
+                os.environ.get("RENDER_RGB_DECODER_NUM_HIDDEN_BLOCKS", "1")
+            )
+
         decoder = RGBDecoderCNN(
             input_dim,
-            hidden_dim=32,
+            hidden_dim=int(decoder_hidden_dim),
             kernel_size=3,
-            num_hidden_blocks=1,
+            num_hidden_blocks=int(decoder_num_hidden_blocks),
         )
         decoder.to(self.device)
         if self.device.type == "cuda":
