@@ -580,18 +580,38 @@ class RenderManager:
             )
 
             ray_dirs_world = None
-            need_ray_dirs = (self.sky_cubemap is not None) or (
+            ray_dirs_world_sky = None
+            need_ray_dirs_for_sky = self.sky_cubemap is not None
+            need_ray_dirs_for_decoder = (
                 self.rgb_decoder is not None
                 and getattr(self.rgb_decoder, "use_ray_dirs", False)
             )
+            need_ray_dirs = need_ray_dirs_for_sky or need_ray_dirs_for_decoder
             if need_ray_dirs:
                 dirs_cam = cam_data["ray_dirs_cam"]
                 c2w = invert_world2camera(viewmats)
                 R = c2w[:, :3, :3]
                 C = int(dirs_cam.shape[0])
-                dirs_flat = dirs_cam.view(C, -1, 3)
-                ray_world_flat = torch.bmm(dirs_flat, R.transpose(1, 2))
-                ray_dirs_world = ray_world_flat.view(C, height, width, 3)
+
+                if need_ray_dirs_for_decoder:
+                    dirs_flat = dirs_cam.view(C, -1, 3)
+                    ray_world_flat = torch.bmm(dirs_flat, R.transpose(1, 2))
+                    ray_dirs_world = ray_world_flat.view(C, height, width, 3)
+
+                if need_ray_dirs_for_sky:
+                    flip = torch.tensor(
+                        [1.0, -1.0, -1.0],
+                        device=dirs_cam.device,
+                        dtype=dirs_cam.dtype,
+                    )
+                    dirs_cam_sky = dirs_cam * flip.view(1, 1, 1, 3)
+                    dirs_flat_sky = dirs_cam_sky.view(C, -1, 3)
+                    ray_world_flat_sky = torch.bmm(
+                        dirs_flat_sky, R.transpose(1, 2)
+                    )
+                    ray_dirs_world_sky = ray_world_flat_sky.view(
+                        C, height, width, 3
+                    )
 
             # 先渲染前景（background + actors，不包含 sky）
             batch_colors, batch_alphas = render(
@@ -627,11 +647,11 @@ class RenderManager:
                 )
                 batch_colors = batch_colors + sky_colors * (1 - batch_alphas)
             elif self.sky_cubemap is not None:
-                if ray_dirs_world is None:
+                if ray_dirs_world_sky is None:
                     raise RuntimeError(
-                        "cubemap天空渲染需要ray_dirs_world，但当前未生成"
+                        "cubemap天空渲染需要ray_dirs_world_sky，但当前未生成"
                     )
-                sky_colors = self._render_sky_cubemap(ray_dirs_world)
+                sky_colors = self._render_sky_cubemap(ray_dirs_world_sky)
                 batch_colors = batch_colors + sky_colors * (1 - batch_alphas)
 
             batch_colors = (batch_colors.clamp(0, 1) * 255).to(torch.uint8)
@@ -719,8 +739,8 @@ class RenderManager:
 
         tex = cubemap.sigmoid()
         R = int(tex.shape[1])
-        px = (gx + 1.0) * 0.5 * (R - 1)
-        py = (gy + 1.0) * 0.5 * (R - 1)
+        px = (gx + 1.0) * 0.5 * R - 0.5
+        py = (gy + 1.0) * 0.5 * R - 0.5
 
         x0 = px.floor().to(torch.long).clamp(0, R - 1)
         y0 = py.floor().to(torch.long).clamp(0, R - 1)
