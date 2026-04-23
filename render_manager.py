@@ -62,6 +62,9 @@ class RenderManager:
         self.mlp_decoder: MLPDecoder | None = None
         self.camera_id_to_index: Dict[str, int] = {}
         self.lidar_id_to_index: Dict[str, int] = {}
+        self._frame_json_cache: Optional[dict] = None
+        self._frame_json_loaded: bool = False
+        self._frame_json_path: Optional[str] = None
 
     @staticmethod
     def _configure_torch_backends(enable: bool) -> None:
@@ -388,10 +391,14 @@ class RenderManager:
             else:
                 azimuth_resolution = float(lidar.azimuth_resolution)
 
-            min_azimuth = float(azimuths.min().item())
-            max_azimuth = float(azimuths.max().item())
-            min_elevation = float(elevations.min().item())
-            max_elevation = float(elevations.max().item())
+            # min_azimuth = float(azimuths.min().item())
+            # max_azimuth = float(azimuths.max().item())
+            min_azimuth = float(lidar.min_azimuth)
+            max_azimuth = float(lidar.max_azimuth)
+            # min_elevation = float(elevations.min().item())
+            # max_elevation = float(elevations.max().item())
+            min_elevation = float(lidar.min_elevation)
+            max_elevation = float(lidar.max_elevation)
 
             image_width = int(raster_pts.shape[1])
             image_height = int(raster_pts.shape[2])
@@ -807,7 +814,6 @@ class RenderManager:
                     rolling_shutter_time=rolling_shutter_time,
                     near_plane=near_plane,
                     far_plane=far_plane,
-                    # 实测radius_clip为0.5时lidar渲染速率较快且不太影响渲染结果
                     radius_clip=0.5,
                     sparse_grad=False,
                     absgrad=True,
@@ -818,6 +824,16 @@ class RenderManager:
                     compute_alpha_sum_until_points_threshold=0.8,
                 )
             )
+            # NOTE: debug lidar rasterization
+            # print(f"tile_elevation_boundaries: {tile_elevation_boundaries}")
+            # print(f"min_azimuth: {min_azimuth}")
+            # print(f"max_azimuth: {max_azimuth}")
+            # print(f"min_elevation: {min_elevation}")
+            # print(f"max_elevation: {max_elevation}")
+            # print(f"azimuth_resolution: {azimuth_resolution}")
+            # print(f"n_elevation_channels: {n_elevation_channels}")
+            # print(f"tile_width: {tile_width}")
+            # print(f"tile_height: {tile_height}")
 
             if self.mlp_decoder is not None:
                 ray_dirs_world = None

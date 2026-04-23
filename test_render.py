@@ -302,14 +302,14 @@ def create_test_lidars(count: int) -> List[Lidar]:
         Lidar(
             f"lidar{i + 1}",
             LIDAR_EXTRINSICS,
-            azimuth_resolution=0.140625,
+            azimuth_resolution=0.13392857142857142,
             min_azimuth=-180.0,
             max_azimuth=180.0,
             n_elevation_channels=64,
-            min_elevation=-17.55,
-            max_elevation=2.5,
-            tile_width=32,
-            tile_height=8,
+            min_elevation=-18.557777404785156,
+            max_elevation=3.3896429538726807,
+            tile_width=64,
+            tile_height=4,
         )
         for i in range(count)
     ]
@@ -358,7 +358,7 @@ def create_test_scenario(
 
     # 创建测试车辆
     vehicles = [
-        Vehicle([8130.21911375, 4680.84724959, 49.77610101], 0, "obj_015"),
+        Vehicle([8130.21911375, 4680.84724959, 49.77610101], 0, "obj_009"),
     ]
 
     # 创建帧参数
