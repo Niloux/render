@@ -3,6 +3,7 @@ import os
 from typing import Dict, List, Optional, Tuple
 
 import torch
+import torch.distributed as dist
 from gsplat import spherical_harmonics
 from gsplat.rendering import lidar_rasterization
 
@@ -29,10 +30,23 @@ from rgb_decoder import RGBDecoder
 
 class RenderManager:
     def __init__(
-        self, model: str = "model.path", enable_torch_backends: bool = True
+        self,
+        model: str = "model.path",
+        enable_torch_backends: bool = True,
+        device: Optional[torch.device | str] = None,
+        world_rank: int = 0,
+        world_size: int = 1,
+        distributed: bool = False,
     ) -> None:
         self._configure_torch_backends(enable_torch_backends)
-        self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+        self.world_rank = int(world_rank)
+        self.world_size = int(world_size)
+        self.distributed = bool(distributed and self.world_size > 1)
+        if self.distributed and not dist.is_initialized():
+            raise RuntimeError("distributed=True 时必须先初始化 torch.distributed")
+        if device is None:
+            device = f"cuda:{torch.cuda.current_device()}" if torch.cuda.is_available() else "cpu"
+        self.device = torch.device(device)
         self.model_path = model
         self.model = GSModel.load_from_pth(model).to_device(self.device)
         background = self.model.get_component("background")
@@ -87,6 +101,43 @@ class RenderManager:
         if hasattr(torch, "set_float32_matmul_precision"):
             torch.set_float32_matmul_precision("high")
 
+    def _shard_tensor_first_dim(self, tensor: torch.Tensor) -> torch.Tensor:
+        if not self.distributed:
+            return tensor
+        return tensor[self.world_rank :: self.world_size].contiguous()
+
+    def _shard_gaussian_data(self, data: Optional[GaussianData]) -> Optional[GaussianData]:
+        if data is None or not self.distributed:
+            return data
+        return GaussianData(
+            means=self._shard_tensor_first_dim(data.means),
+            quats=self._shard_tensor_first_dim(data.quats),
+            scales=self._shard_tensor_first_dim(data.scales),
+            opacities=self._shard_tensor_first_dim(data.opacities),
+            colors=self._shard_tensor_first_dim(data.colors),
+        )
+
+    def _validate_distributed_camera_layout(self) -> None:
+        if not self.distributed or not self.render_camera:
+            return
+        for resolution, cameras in self.cameras.items():
+            if len(cameras) % self.world_size != 0:
+                raise ValueError(
+                    f"分布式相机渲染要求每个分辨率组的相机数能被world_size整除: resolution={resolution} cameras={len(cameras)} world_size={self.world_size}"
+                )
+
+    def _get_local_camera_data(self, cam_data: Dict) -> Dict:
+        if not self.distributed:
+            return cam_data
+        return {
+            "camera_ids": cam_data["camera_ids"][self.world_rank :: self.world_size],
+            "extrinsics_tensor": cam_data["extrinsics_tensor"][self.world_rank :: self.world_size].contiguous(),
+            "intrinsics_tensor": cam_data["intrinsics_tensor"][self.world_rank :: self.world_size].contiguous(),
+            "width": cam_data["width"],
+            "height": cam_data["height"],
+            "ray_dirs_cam": cam_data["ray_dirs_cam"][self.world_rank :: self.world_size].contiguous(),
+        }
+
     def _setup_render_buffers(self) -> None:
         """预分配渲染buffers，消除每帧内存分配
 
@@ -95,19 +146,24 @@ class RenderManager:
         """
         # 计算静态点云数据：训练时 sky 会单独渲染并用 alpha 合成，这里保持一致
         static_components = [self.background]
-        self.static_data = GaussianData.from_components(static_components)
+        self.static_data = self._shard_gaussian_data(
+            GaussianData.from_components(static_components)
+        )
         if not self.static_data:
             raise ValueError("静态点云组件不能为空")
         self.static_points = self.static_data.means.shape[0]
         color_channels = self.static_data.colors.shape[2]
 
-        self.sky_data = (
+        self.sky_data = self._shard_gaussian_data(
             GaussianData.from_components([self.sky]) if self.sky is not None else None
         )
         self.sky_points = self.sky_data.means.shape[0] if self.sky_data else 0
 
-        # 预计算最大可能的动态点数（假设所有车辆类型同时出现）
-        max_dynamic_points = sum(component.num_points for component in self.actors)
+        max_dynamic_points = sum(
+            math.ceil(component.num_points / self.world_size)
+            if self.distributed else component.num_points
+            for component in self.actors
+        )
         self.max_dynamic_points = max_dynamic_points
 
         # 预分配统一的渲染buffer，静态+动态
@@ -176,21 +232,19 @@ class RenderManager:
 
             # 获取对应组件并计算变换
             component = self.actor_map[v.type]
-            num_points = component.num_points
+            means = self._shard_tensor_first_dim(component.get_xyz(heading, position))
+            quats = self._shard_tensor_first_dim(component.get_quats(heading))
+            scales = self._shard_tensor_first_dim(component.get_scales())
+            opacities = self._shard_tensor_first_dim(component.get_opacities())
+            colors = self._shard_tensor_first_dim(component.get_colors())
+            num_points = means.shape[0]
             end_idx = start_idx + num_points
 
-            # 直接写入预分配buffer的对应切片，零拷贝
-            self.render_buffer["means"][start_idx:end_idx] = component.get_xyz(
-                heading, position
-            )
-            self.render_buffer["quats"][start_idx:end_idx] = component.get_quats(
-                heading
-            )
-            self.render_buffer["scales"][start_idx:end_idx] = component.get_scales()
-            self.render_buffer["opacities"][start_idx:end_idx] = (
-                component.get_opacities()
-            )
-            self.render_buffer["colors"][start_idx:end_idx] = component.get_colors()
+            self.render_buffer["means"][start_idx:end_idx] = means
+            self.render_buffer["quats"][start_idx:end_idx] = quats
+            self.render_buffer["scales"][start_idx:end_idx] = scales
+            self.render_buffer["opacities"][start_idx:end_idx] = opacities
+            self.render_buffer["colors"][start_idx:end_idx] = colors
 
             start_idx = end_idx
 
@@ -454,7 +508,10 @@ class RenderManager:
         """
         self.render_camera = bool(getattr(params, "render_camera", True))
         self.render_lidar = bool(getattr(params, "render_lidar", False))
+        if self.distributed and self.render_lidar:
+            raise ValueError("当前多GPU实现仅支持相机渲染，暂不支持lidar_rasterization")
         self.cameras = self._group_cameras_by_resolution(params.cameras)
+        self._validate_distributed_camera_layout()
         rgb_decoder_state, num_cams_ckpt = self._get_rgb_decoder_state_and_num_cams(
             params.cameras
         )
@@ -568,12 +625,14 @@ class RenderManager:
 
         # 使用预计算的相机数据，零查找开销
         for resolution, cam_data in self.camera_data.items():
-            # 直接使用预计算的数据，无需运行时转换
-            camera_ids = cam_data["camera_ids"]
-            extrinsics_tensor = cam_data["extrinsics_tensor"]
-            Ks = cam_data["intrinsics_tensor"]
-            width = cam_data["width"]
-            height = cam_data["height"]
+            local_cam_data = self._get_local_camera_data(cam_data)
+            camera_ids = local_cam_data["camera_ids"]
+            if len(camera_ids) == 0:
+                continue
+            extrinsics_tensor = local_cam_data["extrinsics_tensor"]
+            Ks = local_cam_data["intrinsics_tensor"]
+            width = local_cam_data["width"]
+            height = local_cam_data["height"]
 
             viewmats = self._calculate_viewmats(
                 extrinsics_tensor, ego_heading, ego_position
@@ -588,7 +647,7 @@ class RenderManager:
             )
             need_ray_dirs = need_ray_dirs_for_sky or need_ray_dirs_for_decoder
             if need_ray_dirs:
-                dirs_cam = cam_data["ray_dirs_cam"]
+                dirs_cam = local_cam_data["ray_dirs_cam"]
                 c2w = invert_world2camera(viewmats)
                 R = c2w[:, :3, :3]
                 C = int(dirs_cam.shape[0])
@@ -627,6 +686,7 @@ class RenderManager:
                 rgb_decoder=self.rgb_decoder,
                 camera_ids=camera_ids,
                 ray_dirs_world=ray_dirs_world,
+                distributed=self.distributed,
             )
 
             # 再渲染 sky，并用前景 alpha 做合成：rgb = fg + sky * (1 - acc)
@@ -644,6 +704,7 @@ class RenderManager:
                     rgb_decoder=self.rgb_decoder,
                     camera_ids=camera_ids,
                     ray_dirs_world=ray_dirs_world,
+                    distributed=self.distributed,
                 )
                 batch_colors = batch_colors + sky_colors * (1 - batch_alphas)
             elif self.sky_cubemap is not None:

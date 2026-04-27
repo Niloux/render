@@ -154,6 +154,7 @@ def render(
     rgb_decoder=None,
     camera_ids: Optional[Sequence[str]] = None,
     ray_dirs_world: Optional[torch.Tensor] = None,
+    distributed: bool = False,
 ):
     """原生渲染接口。
 
@@ -181,10 +182,11 @@ def render(
             near_plane=0.001,
             far_plane=1000,
             sh_degree=1,
-            packed=True,
+            packed=False,
             tile_size=_RENDER_TILE_SIZE,
             radius_clip=_RENDER_RADIUS_CLIP,
             rasterize_mode=_RENDER_RASTERIZE_MODE,
+            distributed=distributed,
         )
         return render_colors, render_alphas
 
@@ -217,10 +219,11 @@ def render(
         near_plane=0.001,
         far_plane=1000,
         sh_degree=None,
-        packed=True,
+        packed=False,
         tile_size=_RENDER_TILE_SIZE,
         radius_clip=_RENDER_RADIUS_CLIP,
         rasterize_mode=_RENDER_RASTERIZE_MODE,
+        distributed=distributed,
     )
 
     features = render_feats

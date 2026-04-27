@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """渲染性能测试脚本"""
 
+import os
+os.environ["TORCH_CUDA_ARCH_LIST"] = "8.0 8.6 8.6+PTX 9.0+PTX"
 import argparse
 import json
-import os
 import statistics
 import time
 from pathlib import Path
@@ -11,6 +12,7 @@ from typing import Any, List, Tuple, TypedDict
 
 import numpy as np
 import torch
+import torch.distributed as dist
 
 from data_types import Camera, Lidar, Vehicle
 from render_manager import FrameParams, InitParams, RenderManager
@@ -44,6 +46,52 @@ class BenchmarkStats(TypedDict):
     max_ms: float
     std_ms: float
     fps: float
+
+
+def _dist_enabled() -> bool:
+    return dist.is_available() and dist.is_initialized()
+
+
+def _rank() -> int:
+    return dist.get_rank() if _dist_enabled() else 0
+
+
+def _is_main_process() -> bool:
+    return _rank() == 0
+
+
+def init_distributed() -> tuple[int, int, int]:
+    if "RANK" not in os.environ or "WORLD_SIZE" not in os.environ:
+        if torch.cuda.is_available():
+            torch.cuda.set_device(0)
+        return 0, 0, 1
+    if not torch.cuda.is_available():
+        raise RuntimeError("多GPU渲染需要CUDA环境")
+    local_rank = int(os.environ.get("LOCAL_RANK", "0"))
+    torch.cuda.set_device(local_rank)
+    dist.init_process_group(backend="nccl")
+    return local_rank, dist.get_rank(), dist.get_world_size()
+
+
+def _reduce_max_time(value: float) -> float:
+    if not _dist_enabled():
+        return value
+    t = torch.tensor([value], device=torch.device("cuda", torch.cuda.current_device()), dtype=torch.float64)
+    dist.all_reduce(t, op=dist.ReduceOp.MAX)
+    return float(t.item())
+
+
+def _gather_image_dict(images: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+    if not _dist_enabled():
+        return images
+    payload = {k: v.detach().cpu() for k, v in images.items()}
+    gathered = [None for _ in range(dist.get_world_size())]
+    dist.all_gather_object(gathered, payload)
+    merged: dict[str, torch.Tensor] = {}
+    for item in gathered:
+        if item:
+            merged.update(item)
+    return merged
 
 
 # ================= 标准参数 =================
@@ -334,7 +382,7 @@ def create_test_scenario(
             cameras = loaded_cameras
             if not cameras:
                 raise ValueError("启用了相机渲染，但 sensors_json 中未提供 cameras")
-        if render_config["render_lidar"]:
+        if render_config["render_lidar"] and _is_main_process():
             lidars = loaded_lidars
             if not lidars:
                 raise ValueError("启用了激光雷达渲染，但 sensors_json 中未提供 lidars")
@@ -379,13 +427,16 @@ def run_benchmark(  # noqa: C901
     render_config: RenderConfig,
 ) -> BenchmarkStats:
     """benchmark测试"""
-    print("开始预热阶段...")
+    is_main = _is_main_process()
+    if is_main:
+        print("开始预热阶段...")
     for i in range(config["warmup_frames"]):
         render_manager.render_frame(frame_params)
-        if i % 5 == 0:
+        if is_main and i % 5 == 0:
             print(f"预热进度: {i + 1}/{config['warmup_frames']}")
 
-    print("开始性能测试...")
+    if is_main:
+        print("开始性能测试...")
     render_times: List[float] = []
 
     # 确保输出目录存在
@@ -395,32 +446,38 @@ def run_benchmark(  # noqa: C901
     for i in range(config["benchmark_frames"]):
         t0 = time.perf_counter()
         frame_resp = render_manager.render_frame(frame_params)
-        torch.cuda.synchronize()  # 确保GPU操作完成
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
         t1 = time.perf_counter()
 
-        render_time = t1 - t0
+        render_time = _reduce_max_time(t1 - t0)
         render_times.append(render_time)
 
         # 保存第一帧结果
         if i == 0 and config["save_first_frame"]:
-            if render_config["render_camera"] and frame_resp.images:
-                print(f"正在保存相机图像到 {config['output_dir']}...")
-                try:
-                    save_colors_as_png(
-                        frame_resp.images, output_dir=config["output_dir"]
-                    )
-                except Exception as e:
-                    print(f"保存相机图像失败: {e}")
+            gathered_images = (
+                _gather_image_dict(frame_resp.images)
+                if render_config["render_camera"] else {}
+            )
+            if is_main:
+                if render_config["render_camera"] and gathered_images:
+                    print(f"正在保存相机图像到 {config['output_dir']}...")
+                    try:
+                        save_colors_as_png(
+                            gathered_images, output_dir=config["output_dir"]
+                        )
+                    except Exception as e:
+                        print(f"保存相机图像失败: {e}")
 
-            if render_config["render_lidar"] and frame_resp.lidars:
-                print(f"正在保存激光雷达点云到 {config['output_dir']}...")
-                for lidar_id, lidar_data in frame_resp.lidars.items():
-                    save_path = os.path.join(config["output_dir"], f"{lidar_id}.ply")
-                    save_point_cloud_as_ply(save_path, lidar_data)
+                if render_config["render_lidar"] and frame_resp.lidars:
+                    print(f"正在保存激光雷达点云到 {config['output_dir']}...")
+                    for lidar_id, lidar_data in frame_resp.lidars.items():
+                        save_path = os.path.join(config["output_dir"], f"{lidar_id}.ply")
+                        save_point_cloud_as_ply(save_path, lidar_data)
 
-            print("第一帧结果处理完成")
+                print("第一帧结果处理完成")
 
-        if (i + 1) % 20 == 0:
+        if is_main and (i + 1) % 20 == 0:
             print(
                 f"测试进度: {i + 1}/{config['benchmark_frames']} - 当前帧耗时: {render_time * 1000:.2f}ms"  # noqa: E501
             )
@@ -515,25 +572,40 @@ def main() -> None:  # noqa: C901
     # 环境配置
     os.environ["TORCH_CUDA_ARCH_LIST"] = "12.0"
 
+    local_rank = 0
+    world_rank = 0
+    world_size = 1
     try:
+        local_rank, world_rank, world_size = init_distributed()
         config, render_config = parse_args()
 
         model_path = Path(config["model_path"])
         if not model_path.exists():
             raise FileNotFoundError(f"模型文件不存在: {model_path}")
 
-        print(f"初始化渲染管理器: {model_path}")
-        render_manager = RenderManager(str(model_path))
+        if _is_main_process():
+            print(f"初始化渲染管理器: {model_path}")
+            if world_size > 1:
+                print(f"启用多GPU相机渲染: world_size={world_size}")
+        render_manager = RenderManager(
+            str(model_path),
+            device=f"cuda:{local_rank}" if torch.cuda.is_available() else "cpu",
+            world_rank=world_rank,
+            world_size=world_size,
+            distributed=world_size > 1,
+        )
 
         init_params, frame_params = create_test_scenario(config, render_config)
 
-        print("初始化渲染器...")
+        if _is_main_process():
+            print("初始化渲染器...")
         init_resp = render_manager.init(init_params)
         if not init_resp.init_status:
             raise RuntimeError("渲染器初始化失败")
 
-        print("渲染器初始化成功")
-        if render_config["render_camera"]:
+        if _is_main_process():
+            print("渲染器初始化成功")
+        if render_config["render_camera"] and _is_main_process():
             if config.get("sensors_json"):
                 print(
                     f"- 相机: {len(init_params.cameras)}个 (from {config['sensors_json']})"  # noqa: E501
@@ -559,15 +631,20 @@ def main() -> None:  # noqa: C901
                 print(f"- 激光雷达: {config['lidar_count']}个")
 
         stats = run_benchmark(render_manager, frame_params, config, render_config)
-        print_benchmark_results(stats, render_config)
+        if _is_main_process():
+            print_benchmark_results(stats, render_config)
 
     except KeyboardInterrupt:
-        print("\n测试被用户中断")
+        if _is_main_process():
+            print("\n测试被用户中断")
     except Exception as e:
-        print(f"测试失败: {e}")
+        print(f"测试失败(rank={world_rank}): {e}")
         import traceback
 
         traceback.print_exc()
+    finally:
+        if _dist_enabled():
+            dist.destroy_process_group()
 
 
 if __name__ == "__main__":
