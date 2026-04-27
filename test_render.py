@@ -358,7 +358,7 @@ def create_test_scenario(
 
     # 创建测试车辆
     vehicles = [
-        Vehicle([8130.21911375, 4680.84724959, 49.77610101], 0, "obj_009"),
+        Vehicle([8130.21911375, 4680.84724959, 49.77610101], 0, "obj_015"),
     ]
 
     # 创建帧参数
@@ -462,7 +462,7 @@ def parse_args() -> Tuple[BenchmarkConfig, RenderConfig]:
     parser.add_argument(
         "--model-path",
         type=str,
-        default="/home/saimo/work/render/049_cnn_0421.pth",
+        default="049_cnn_0421.pth",
         help="模型文件路径",
     )
     parser.add_argument("--warmup", type=int, default=1, help="预热帧数")
