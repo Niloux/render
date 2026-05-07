@@ -582,9 +582,8 @@ class RenderManager:
             ray_dirs_world = None
             ray_dirs_world_sky = None
             need_ray_dirs_for_sky = self.sky_cubemap is not None
-            need_ray_dirs_for_decoder = (
-                self.rgb_decoder is not None
-                and getattr(self.rgb_decoder, "use_ray_dirs", False)
+            need_ray_dirs_for_decoder = self.rgb_decoder is not None and getattr(
+                self.rgb_decoder, "use_ray_dirs", False
             )
             need_ray_dirs = need_ray_dirs_for_sky or need_ray_dirs_for_decoder
             if need_ray_dirs:
@@ -606,12 +605,8 @@ class RenderManager:
                     )
                     dirs_cam_sky = dirs_cam * flip.view(1, 1, 1, 3)
                     dirs_flat_sky = dirs_cam_sky.view(C, -1, 3)
-                    ray_world_flat_sky = torch.bmm(
-                        dirs_flat_sky, R.transpose(1, 2)
-                    )
-                    ray_dirs_world_sky = ray_world_flat_sky.view(
-                        C, height, width, 3
-                    )
+                    ray_world_flat_sky = torch.bmm(dirs_flat_sky, R.transpose(1, 2))
+                    ray_dirs_world_sky = ray_world_flat_sky.view(C, height, width, 3)
 
             # 先渲染前景（background + actors，不包含 sky）
             batch_colors, batch_alphas = render(
@@ -854,6 +849,12 @@ class RenderManager:
             # print(f"n_elevation_channels: {n_elevation_channels}")
             # print(f"tile_width: {tile_width}")
             # print(f"tile_height: {tile_height}")
+            # print(f"meta_info: {meta_info}")
+            # print(f"radii.shape: {meta_info['radii'].shape}")
+            # print(f"means2d.shape: {meta_info['means2d'].shape}")
+            # print(f"radii > 0 的个数: {(meta_info['radii'] > 0).sum().item()}")
+            # print(f"flatten_ids 的个数: {meta_info['flatten_ids'].numel()}")
+            # quit()
 
             if self.mlp_decoder is not None:
                 ray_dirs_world = None
