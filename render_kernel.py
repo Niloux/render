@@ -47,50 +47,6 @@ def invert_world2camera(viewmats: torch.Tensor) -> torch.Tensor:
     return c2w
 
 
-def compute_lidar_ray_dirs_world(
-    raster_pts: torch.Tensor, viewmats: torch.Tensor
-) -> torch.Tensor:
-    """根据raster_pts中的(azimuth,elevation)计算世界系射线方向。
-
-    Args:
-        raster_pts: [B, H, W, D] 或 [H, W, D]，其中前两维为 azimuth/elevation（单位：度）。
-        viewmats: [B, 4, 4] 的 World2Lidar 变换矩阵。
-
-    Returns:
-        ray_dirs_world: [B, H, W, 3] 的单位方向向量。
-    """  # noqa: E501
-    if raster_pts.dim() == 3:
-        raster_pts = raster_pts.unsqueeze(0)
-    if viewmats.dim() == 2:
-        viewmats = viewmats.unsqueeze(0)
-
-    if raster_pts.dim() != 4 or viewmats.dim() != 3:
-        raise ValueError(
-            f"raster_pts/viewmats维度不匹配: raster_pts={tuple(raster_pts.shape)} viewmats={tuple(viewmats.shape)}"  # noqa: E501
-        )
-
-    angles = torch.deg2rad(raster_pts[..., :2])
-    az = angles[..., 0:1]
-    el = angles[..., 1:2]
-
-    dirs_lidar = torch.cat(
-        [
-            torch.cos(az) * torch.cos(el),
-            torch.sin(az) * torch.cos(el),
-            torch.sin(el),
-        ],
-        dim=-1,
-    )
-
-    lidar_to_world = invert_world2camera(viewmats)
-    R = lidar_to_world[:, :3, :3]  # [B, 3, 3]
-    ray_dirs_world = (
-        R.reshape(R.shape[0], 1, 1, 3, 3) @ dirs_lidar.unsqueeze(-1)
-    ).squeeze(-1)
-    ray_dirs_world = ray_dirs_world / (ray_dirs_world.norm(dim=-1, keepdim=True) + 1e-8)
-    return ray_dirs_world
-
-
 def get_ray_dirs_cam_pinhole_batched(
     Ks: torch.Tensor, width: int, height: int
 ) -> torch.Tensor:

@@ -121,9 +121,7 @@ class RenderManager:
             )
             self.camera_data = build_camera_data(self.cameras, self.device)
 
-        self.lidars, self.lidar_data = build_lidar_data(
-            params.lidars, self.model.raster_pts, self.device
-        )
+        self.lidars, self.lidar_data = build_lidar_data(params.lidars, self.device)
         self.mlp_decoder, self.lidar_id_to_index = init_mlp_decoder(
             self.render_lidar, params.lidars, self.model.mlp_decoder_state, self.device
         )

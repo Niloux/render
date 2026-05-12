@@ -1,10 +1,18 @@
 """Lidar initialization and rendering helpers."""
 
+import math
 from typing import Dict, List, Optional, Tuple, TypedDict
 
 import torch
-from gsplat import spherical_harmonics
-from gsplat.rendering import lidar_rasterization
+from gsplat import (
+    RowOffsetStructuredSpinningLidarModelParameters,
+    RowOffsetStructuredSpinningLidarModelParametersExt,
+    SpinningDirection,
+    compute_lidar_angles_to_columns_map,
+    compute_lidar_tiling,
+    rasterization,
+    spherical_harmonics,
+)
 
 from data_types import Lidar
 from mlp_decoder import MLPDecoder
@@ -15,6 +23,7 @@ from util import pano_to_lidar_with_intensities
 
 class LidarBatchData(TypedDict):
     extrinsics_tensor: torch.Tensor
+    lidar_coeffs: RowOffsetStructuredSpinningLidarModelParametersExt
     azimuths: torch.Tensor
     elevations: torch.Tensor
     elevation_boundaries: torch.Tensor
@@ -27,7 +36,6 @@ class LidarBatchData(TypedDict):
     min_elevation: float
     max_elevation: float
     azimuth_resolution: float
-    raster_pts: torch.Tensor
     ray_dirs_lidar: torch.Tensor
     pano_dirs_lidar: torch.Tensor
     depth_valid_mask: torch.Tensor
@@ -36,83 +44,150 @@ class LidarBatchData(TypedDict):
 LidarData = Dict[str, LidarBatchData]
 
 
-def prepare_lidar_grids_from_raster_pts(
-    raster_pts: torch.Tensor, tile_height: int, device: torch.device
+def build_lidar_coeffs(
+    lidar: Lidar, device: torch.device
+) -> RowOffsetStructuredSpinningLidarModelParametersExt:
+    azimuth_span = float(lidar.max_azimuth) - float(lidar.min_azimuth)
+    if azimuth_span <= 0:
+        raise ValueError(
+            f"lidar {lidar.id} azimuth范围非法: "
+            f"min={lidar.min_azimuth} max={lidar.max_azimuth}"
+        )
+    if lidar.azimuth_resolution <= 0:
+        raise ValueError(
+            f"lidar {lidar.id} azimuth_resolution必须为正数，实际为{lidar.azimuth_resolution}"
+        )
+
+    n_columns_float = azimuth_span / float(lidar.azimuth_resolution)
+    n_columns = int(round(n_columns_float))
+    if n_columns <= 0 or not math.isclose(
+        n_columns_float, n_columns, rel_tol=0.0, abs_tol=1e-4
+    ):
+        raise ValueError(
+            f"lidar {lidar.id} azimuth列数无法由范围和分辨率整除: "
+            f"span={azimuth_span} resolution={lidar.azimuth_resolution}"
+        )
+    if lidar.n_elevation_channels <= 0:
+        raise ValueError(
+            f"lidar {lidar.id} n_elevation_channels必须为正数，实际为{lidar.n_elevation_channels}"
+        )
+
+    dtype = torch.float32
+    row_elevations_rad = torch.linspace(
+        math.radians(float(lidar.max_elevation)),
+        math.radians(float(lidar.min_elevation)),
+        int(lidar.n_elevation_channels),
+        dtype=dtype,
+        device=device,
+    )
+    azimuth_step_rad = math.radians(float(lidar.azimuth_resolution))
+    column_azimuths_rad = (
+        math.radians(float(lidar.max_azimuth))
+        - torch.arange(n_columns, dtype=dtype, device=device) * azimuth_step_rad
+    )
+    row_azimuth_offsets_rad = torch.zeros(
+        int(lidar.n_elevation_channels), dtype=dtype, device=device
+    )
+
+    lidar_params = RowOffsetStructuredSpinningLidarModelParameters(
+        row_elevations_rad=row_elevations_rad,
+        column_azimuths_rad=column_azimuths_rad,
+        row_azimuth_offsets_rad=row_azimuth_offsets_rad,
+        spinning_frequency_hz=10.0,
+        spinning_direction=SpinningDirection.CLOCKWISE,
+    )
+    angles_to_columns_map = compute_lidar_angles_to_columns_map(lidar_params)
+    tiling = compute_lidar_tiling(
+        lidar_params,
+        n_bins_elevation=int(lidar.tile_height),
+        max_pts_per_tile=int(lidar.tile_width) * int(lidar.tile_height),
+        resolution_elevation=1600,
+        densification_factor_azimuth=8,
+    )
+    return RowOffsetStructuredSpinningLidarModelParametersExt(
+        lidar_params, angles_to_columns_map, tiling
+    )
+
+
+def build_lidar_ray_dirs_from_coeffs(
+    lidar_coeffs: RowOffsetStructuredSpinningLidarModelParametersExt,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Infer lidar angular grids and tile boundaries from checkpoint raster_pts."""
-    if not isinstance(raster_pts, torch.Tensor):
-        raster_pts = torch.as_tensor(raster_pts)
-    raster_pts = raster_pts.to(device=device, dtype=torch.float32)
-    if raster_pts.dim() == 3:
-        raster_pts = raster_pts.unsqueeze(0)
-    if raster_pts.dim() != 4:
-        raise ValueError(f"raster_pts维度必须为3或4，实际为{tuple(raster_pts.shape)}")
+    row_elevations = lidar_coeffs.row_elevations_rad
+    column_azimuths = lidar_coeffs.column_azimuths_rad
+    row_offsets = lidar_coeffs.row_azimuth_offsets_rad
 
-    az_grid = raster_pts[0, ..., 0]
-    el_grid = raster_pts[0, ..., 1]
+    raw_azimuths = column_azimuths.unsqueeze(0) + row_offsets.unsqueeze(1)
+    azimuths_rad = torch.remainder(raw_azimuths + math.pi, 2 * math.pi) - math.pi
+    azimuths_rad = torch.where(
+        torch.isclose(azimuths_rad, torch.full_like(azimuths_rad, -math.pi))
+        & (raw_azimuths > 0),
+        torch.full_like(azimuths_rad, math.pi),
+        azimuths_rad,
+    )
+    elevations_rad = row_elevations[:, None].expand_as(azimuths_rad)
 
-    az_axis = 0 if az_grid[:, 0].std() >= az_grid[0, :].std() else 1
-    el_axis = 0 if el_grid[:, 0].std() >= el_grid[0, :].std() else 1
-    if el_axis == az_axis:
-        el_axis = 1 - az_axis
-
-    azimuths = az_grid[:, 0] if az_axis == 0 else az_grid[0, :]
-    elevations = el_grid[:, 0] if el_axis == 0 else el_grid[0, :]
-
+    azimuths = torch.rad2deg(column_azimuths)
+    elevations = torch.rad2deg(row_elevations)
+    bins_elevation = lidar_coeffs.tiling.n_bins_elevation
     elevation_boundaries = torch.cat([
-        elevations[0:1] - 1.0,
+        elevations[0:1] + 1.0,
         (
-            elevations[tile_height::tile_height]
-            + elevations[tile_height - 1 : -1 : tile_height]
+            elevations[bins_elevation::bins_elevation]
+            + elevations[bins_elevation - 1 : -1 : bins_elevation]
         )
         / 2,
-        elevations[-1:] + 1.0,
+        elevations[-1:] - 1.0,
     ])
 
-    return raster_pts, azimuths, elevations, elevation_boundaries
+    ray_dirs_lidar = torch.stack(
+        [
+            torch.cos(azimuths_rad) * torch.cos(elevations_rad),
+            torch.sin(azimuths_rad) * torch.cos(elevations_rad),
+            torch.sin(elevations_rad),
+        ],
+        dim=-1,
+    )
+    ray_dirs_lidar = ray_dirs_lidar / (ray_dirs_lidar.norm(dim=-1, keepdim=True) + 1e-8)
+    return ray_dirs_lidar.unsqueeze(0), azimuths, elevations, elevation_boundaries
 
 
 def build_lidar_data(
     lidars: Optional[List[Lidar]],
-    checkpoint_raster_pts: Optional[torch.Tensor],
     device: torch.device,
 ) -> Tuple[Dict[str, Lidar], LidarData]:
     if not lidars:
         return {}, {}
-    if checkpoint_raster_pts is None:
-        raise ValueError(
-            "pth中缺少raster_pts，当前实现不再在运行时构建raster_pts；"
-            "请在训练/导出时将raster_pts保存到checkpoint中"
-        )
 
     lidar_by_id: Dict[str, Lidar] = {}
     lidar_data: LidarData = {}
     for lidar in lidars:
         lidar_by_id[lidar.id] = lidar
-        raster_pts, azimuths, elevations, elevation_boundaries = (
-            prepare_lidar_grids_from_raster_pts(
-                checkpoint_raster_pts, tile_height=lidar.tile_height, device=device
-            )
+        lidar_coeffs = build_lidar_coeffs(lidar, device)
+        ray_dirs_lidar, azimuths, elevations, elevation_boundaries = (
+            build_lidar_ray_dirs_from_coeffs(lidar_coeffs)
         )
+        image_height = int(ray_dirs_lidar.shape[1])
+        image_width = int(ray_dirs_lidar.shape[2])
 
         if azimuths.numel() > 1:
             azimuth_resolution = torch.diff(azimuths).abs().median().item()
         else:
             azimuth_resolution = float(lidar.azimuth_resolution)
 
-        ray_dirs_lidar = build_lidar_ray_dirs(raster_pts)
-        gt_depth = raster_pts[..., 2].squeeze(0)
-        depth_valid_mask = (gt_depth > 0) & (gt_depth <= 1000.0)
+        depth_valid_mask = torch.ones(
+            (image_height, image_width), device=device, dtype=torch.bool
+        )
 
         lidar_data[lidar.id] = {
             "extrinsics_tensor": torch.tensor(
                 [lidar.extrinsics], dtype=torch.float32, device=device
             ),
+            "lidar_coeffs": lidar_coeffs,
             "azimuths": azimuths,
             "elevations": elevations,
             "elevation_boundaries": elevation_boundaries,
-            "image_width": int(raster_pts.shape[1]),
-            "image_height": int(raster_pts.shape[2]),
+            "image_width": image_width,
+            "image_height": image_height,
             "tile_width": lidar.tile_width,
             "tile_height": lidar.tile_height,
             "min_azimuth": float(lidar.min_azimuth),
@@ -120,28 +195,12 @@ def build_lidar_data(
             "min_elevation": float(lidar.min_elevation),
             "max_elevation": float(lidar.max_elevation),
             "azimuth_resolution": azimuth_resolution,
-            "raster_pts": raster_pts,
             "ray_dirs_lidar": ray_dirs_lidar,
             "pano_dirs_lidar": ray_dirs_lidar.squeeze(0),
             "depth_valid_mask": depth_valid_mask,
         }
 
     return lidar_by_id, lidar_data
-
-
-def build_lidar_ray_dirs(raster_pts: torch.Tensor) -> torch.Tensor:
-    angles = torch.deg2rad(raster_pts[..., :2])
-    az = angles[..., 0:1]
-    el = angles[..., 1:2]
-    ray_dirs_lidar = torch.cat(
-        [
-            torch.cos(az) * torch.cos(el),
-            torch.sin(az) * torch.cos(el),
-            torch.sin(el),
-        ],
-        dim=-1,
-    )
-    return ray_dirs_lidar / (ray_dirs_lidar.norm(dim=-1, keepdim=True) + 1e-8)
 
 
 def get_mlp_decoder_state_and_num_lidars(
@@ -203,6 +262,7 @@ def render_lidars(
     lidars = {}
     if not render_enabled:
         return lidars
+    _ = zero_velocities
 
     (
         render_means,
@@ -227,55 +287,50 @@ def render_lidars(
                 render_colors, render_means, viewmats
             )
 
-        raster_pts = lidar_cfg["raster_pts"]
-        rendered_feat, _, _, _ = lidar_rasterization(
+        Ks = (
+            torch
+            .eye(3, device=render_means.device, dtype=render_means.dtype)
+            .unsqueeze(0)
+            .expand(viewmats.shape[0], -1, -1)
+            .contiguous()
+        )
+        rendered_feat, _, _ = rasterization(
             means=render_means,
             quats=render_quats,
             scales=render_scales,
             opacities=render_opacities.squeeze(-1),
-            lidar_features=lidar_features,
-            velocities=zero_velocities[: render_means.shape[0]],
+            colors=lidar_features,
             viewmats=viewmats,
-            raster_pts=raster_pts[..., :4],
-            tile_elevation_boundaries=lidar_cfg["elevation_boundaries"],
-            min_azimuth=lidar_cfg["min_azimuth"],
-            max_azimuth=lidar_cfg["max_azimuth"],
-            min_elevation=lidar_cfg["min_elevation"],
-            max_elevation=lidar_cfg["max_elevation"],
-            n_elevation_channels=lidar_cfg["elevations"].shape[0],
-            azimuth_resolution=lidar_cfg["azimuth_resolution"],
-            tile_width=lidar_cfg["tile_width"],
-            tile_height=lidar_cfg["tile_height"],
-            linear_velocity=torch.zeros(
-                (1, 3), device=render_means.device, dtype=render_means.dtype
-            ),
-            angular_velocity=torch.zeros(
-                (1, 3), device=render_means.device, dtype=render_means.dtype
-            ),
-            rolling_shutter_time=torch.zeros(
-                (1,), device=render_means.device, dtype=render_means.dtype
-            ),
+            Ks=Ks,
+            width=lidar_cfg["image_width"],
+            height=lidar_cfg["image_height"],
             near_plane=0.2,
-            far_plane=300.0,
-            radius_clip=0.5,
+            far_plane=100.0,
+            radius_clip=0.0,
+            sh_degree=None,
+            packed=False,
+            tile_size=16,
+            render_mode="RGB-Ed",
             sparse_grad=False,
-            absgrad=True,
+            absgrad=False,
             rasterize_mode="antialiased",
             channel_chunk=128,
+            camera_model="lidar",
+            lidar_coeffs=lidar_cfg["lidar_coeffs"],
+            with_ut=True,
+            with_eval3d=True,
+            global_z_order=False,
             eps2d=0.01718873385,
-            compute_alpha_sum_until_points=False,
-            compute_alpha_sum_until_points_threshold=0.8,
         )
 
         if mlp_decoder is not None:
             rendered_feat = decode_lidar_features(
-                lidar_id, rendered_feat, raster_pts, viewmats, lidar_cfg, mlp_decoder
+                lidar_id, rendered_feat, viewmats, lidar_cfg, mlp_decoder
             )
-        out = process_lidar_output(raster_pts, rendered_feat)
+        out = process_lidar_output(rendered_feat, lidar_cfg["depth_valid_mask"])
         lidars[lidar_id] = pano_to_lidar_with_intensities(
-            raster_pts,
             out,
-            directions=lidar_cfg.get("pano_dirs_lidar", None),
+            directions=lidar_cfg["pano_dirs_lidar"],
             depth_valid_mask=lidar_cfg.get("depth_valid_mask", None),
         )
 
@@ -285,30 +340,25 @@ def render_lidars(
 def decode_lidar_features(
     lidar_id: str,
     rendered_feat: torch.Tensor,
-    raster_pts: torch.Tensor,
     viewmats: torch.Tensor,
     lidar_cfg: LidarBatchData,
     mlp_decoder: MLPDecoder,
 ) -> torch.Tensor:
-    ray_dirs_world = None
-    ray_dirs_lidar = lidar_cfg.get("ray_dirs_lidar", None)
-    if isinstance(ray_dirs_lidar, torch.Tensor):
-        lidar_to_world = invert_world2camera(viewmats)
-        R = lidar_to_world[:, :3, :3]
-        B, H, W = (
-            int(ray_dirs_lidar.shape[0]),
-            int(ray_dirs_lidar.shape[1]),
-            int(ray_dirs_lidar.shape[2]),
-        )
-        dirs_flat = ray_dirs_lidar.view(B, -1, 3)
-        ray_world_flat = torch.bmm(dirs_flat, R.transpose(1, 2))
-        ray_dirs_world = ray_world_flat.view(B, H, W, 3)
+    ray_dirs_lidar = lidar_cfg["ray_dirs_lidar"]
+    lidar_to_world = invert_world2camera(viewmats)
+    R = lidar_to_world[:, :3, :3]
+    B, H, W = (
+        int(ray_dirs_lidar.shape[0]),
+        int(ray_dirs_lidar.shape[1]),
+        int(ray_dirs_lidar.shape[2]),
+    )
+    dirs_flat = ray_dirs_lidar.view(B, -1, 3)
+    ray_world_flat = torch.bmm(dirs_flat, R.transpose(1, 2))
+    ray_dirs_world = ray_world_flat.view(B, H, W, 3)
 
     decoded_intensity, decoded_ray_drop_logits = mlp_decoder(
         lidar_id,
         rendered_feat[..., :-1],
-        raster_pts,
-        viewmats,
         ray_dirs_world=ray_dirs_world,
     )
     return torch.cat(
@@ -318,16 +368,14 @@ def decode_lidar_features(
 
 
 def process_lidar_output(
-    raster_pts: torch.Tensor, rendered_feat: torch.Tensor
+    rendered_feat: torch.Tensor, depth_valid_mask: torch.Tensor
 ) -> Dict[str, torch.Tensor]:
     lidar_intensity = rendered_feat[..., 0].squeeze(0)
     lidar_ray_drop_logits = rendered_feat[..., 1].squeeze(0)
     lidar_depth_render = rendered_feat[..., -1].squeeze(0)
 
-    valid_returns = ((raster_pts[..., 2] <= 1000) & (raster_pts[..., 2] > 0)).squeeze(0)
-    gt_valid = (raster_pts[..., 2] > 0).squeeze(0)
-    valid_returns = align_mask(valid_returns, lidar_depth_render)
-    gt_valid = align_mask(gt_valid, lidar_depth_render)
+    valid_returns = align_mask(depth_valid_mask, lidar_depth_render)
+    gt_valid = valid_returns
 
     valid_mask = valid_returns.to(lidar_depth_render.dtype)
     lidar_intensity = lidar_intensity * valid_mask
