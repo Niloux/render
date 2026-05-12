@@ -1,6 +1,6 @@
 """Camera initialization and rendering helpers."""
 
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, TypedDict
 
 import torch
 
@@ -15,8 +15,17 @@ from render_runtime import calculate_viewmats
 from rgb_decoder import RGBDecoder
 
 
+class CameraBatchData(TypedDict):
+    camera_ids: List[str]
+    extrinsics_tensor: torch.Tensor
+    intrinsics_tensor: torch.Tensor
+    width: int
+    height: int
+    ray_dirs_cam: torch.Tensor
+
+
 CameraGroups = Dict[Tuple[int, int], List[Camera]]
-CameraData = Dict[Tuple[int, int], Dict[str, Any]]
+CameraData = Dict[Tuple[int, int], CameraBatchData]
 
 
 def group_cameras_by_resolution(cameras: List[Camera]) -> CameraGroups:
@@ -169,7 +178,7 @@ def render_cameras(
 
 
 def build_camera_ray_dirs(
-    cam_data: Dict[str, Any],
+    cam_data: CameraBatchData,
     viewmats: torch.Tensor,
     rgb_decoder: Optional[RGBDecoder],
     sky_cubemap: Optional[torch.Tensor],

@@ -1,6 +1,6 @@
 """Lidar initialization and rendering helpers."""
 
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, TypedDict
 
 import torch
 from gsplat import spherical_harmonics
@@ -13,7 +13,27 @@ from render_runtime import calculate_viewmats
 from util import pano_to_lidar_with_intensities
 
 
-LidarData = Dict[str, Dict]
+class LidarBatchData(TypedDict):
+    extrinsics_tensor: torch.Tensor
+    azimuths: torch.Tensor
+    elevations: torch.Tensor
+    elevation_boundaries: torch.Tensor
+    image_width: int
+    image_height: int
+    tile_width: int
+    tile_height: int
+    min_azimuth: float
+    max_azimuth: float
+    min_elevation: float
+    max_elevation: float
+    azimuth_resolution: float
+    raster_pts: torch.Tensor
+    ray_dirs_lidar: torch.Tensor
+    pano_dirs_lidar: torch.Tensor
+    depth_valid_mask: torch.Tensor
+
+
+LidarData = Dict[str, LidarBatchData]
 
 
 def prepare_lidar_grids_from_raster_pts(
@@ -267,7 +287,7 @@ def decode_lidar_features(
     rendered_feat: torch.Tensor,
     raster_pts: torch.Tensor,
     viewmats: torch.Tensor,
-    lidar_cfg: Dict,
+    lidar_cfg: LidarBatchData,
     mlp_decoder: MLPDecoder,
 ) -> torch.Tensor:
     ray_dirs_world = None
