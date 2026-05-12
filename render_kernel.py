@@ -1,22 +1,10 @@
-import math
 import os
 from typing import List, Optional, Sequence
 
 import torch
 from gsplat import (
-    fully_fused_projection,
-    isect_offset_encode,
-    isect_tiles,
     rasterization,
-    rasterize_to_pixels,
 )
-from gsplat.cuda._wrapper import (
-    map_points_to_lidar_tiles,
-    points_mapping_offset_encode,
-    populate_image_from_points,
-)
-
-NATIVE = True
 
 _RENDER_TILE_SIZE = int(os.environ.get("RENDER_TILE_SIZE", "16"))
 _RENDER_RASTERIZE_MODE = os.environ.get("RENDER_RASTERIZE_MODE", "antialiased")
@@ -143,134 +131,7 @@ def get_ray_dirs_pinhole_batched(
     return dirs_world.view(C, height, width, 3)
 
 
-def render_gaussian_splatting(
-    means,
-    quats,
-    scales,
-    opacities,
-    colors,
-    viewmats,
-    Ks,
-    img_width,
-    img_height,
-    rgb_decoder=None,
-    camera_ids: Optional[Sequence[str]] = None,
-    ray_dirs_world: Optional[torch.Tensor] = None,
-):
-    """
-    执行高斯点云渲染的核心函数
-
-    Args:
-        means: 高斯点的3D位置 [N, 3]
-        quats: 高斯点的四元数旋转 [N, 4]
-        scales: 高斯点的缩放 [N, 3]
-        opacities: 高斯点的不透明度 [N, 1]
-        colors: 高斯点的球谐系数 [N, K, 3]
-        viewmats: World2Camera转换矩阵 [C, 4, 4]
-        Ks: 相机内参矩阵 [C, 3, 3]
-        img_width: 图像宽度
-        img_height: 图像高度
-
-    Returns:
-        render_colors: 渲染的颜色图像 [C, H, W, 4]
-        render_alphas: 渲染的alpha通道 [C, H, W, 1]
-    """
-    # 保持与rasterization一致：当颜色包含额外通道时，只取相机渲染用的前三个通道
-    if colors.dim() == 3 and colors.shape[1] == 4 and colors.shape[2] >= 3:
-        colors = colors[..., :3]
-    if colors.dim() != 3 or colors.shape[1] != 4 or colors.shape[2] != 3:
-        raise ValueError(
-            f"CNN渲染分支期望colors形状为[N, 4, 3] (sh_degree=1)，实际为{tuple(colors.shape)}"  # noqa: E501
-        )
-
-    # 投影
-    project_results = fully_fused_projection(
-        means=means,
-        covars=None,
-        quats=quats,
-        scales=scales,
-        viewmats=viewmats,
-        Ks=Ks,
-        width=img_width,
-        height=img_height,
-        packed=False,
-        near_plane=0.001,
-        far_plane=1000,
-        calc_compensations=True,
-    )
-    radii, means2d, depths, conics, compensations = project_results
-
-    # 处理不透明度
-    batch_opacities = opacities[None, :, 0].expand(viewmats.shape[0], -1)  # [C, N]
-    if compensations is not None:
-        batch_opacities = batch_opacities * compensations
-
-    # Tile处理
-    tile_size = 16
-    tile_width = math.ceil(img_width / float(tile_size))
-    tile_height = math.ceil(img_height / float(tile_size))
-    _tiles_per_gauss, isect_ids, flatten_ids = isect_tiles(
-        means2d,
-        radii,
-        depths,
-        tile_size,
-        tile_width,
-        tile_height,
-        packed=False,
-        n_images=viewmats.shape[0],
-    )
-    isect_offsets = isect_offset_encode(
-        isect_ids, viewmats.shape[0], tile_width, tile_height
-    )
-
-    # 将每个点的SH系数展平为每个点的特征，直接光栅化到像素
-    shs = colors.expand(viewmats.shape[0], -1, -1, -1)  # [C, N, K, 3]
-    colors = shs.contiguous().view(viewmats.shape[0], shs.shape[1], -1)
-
-    # 光栅化
-    render_colors, render_alphas = rasterize_to_pixels(
-        means2d,
-        conics,
-        colors,
-        batch_opacities,
-        img_width,
-        img_height,
-        tile_size,
-        isect_offsets,
-        flatten_ids,
-        backgrounds=None,
-        packed=False,
-        absgrad=True,
-    )
-
-    if rgb_decoder is None:
-        raise ValueError("启用CNN渲染分支时必须传入rgb_decoder实例")
-    if camera_ids is None:
-        raise ValueError("启用CNN渲染分支时必须传入camera_ids")
-    if len(camera_ids) != viewmats.shape[0]:
-        raise ValueError(
-            f"camera_ids数量与viewmats不一致: camera_ids={len(camera_ids)} viewmats={viewmats.shape[0]}"  # noqa: E501
-        )
-
-    features = render_colors
-    if getattr(rgb_decoder, "use_ray_dirs", False) and ray_dirs_world is None:
-        c2w = invert_world2camera(viewmats)
-        ray_dirs_world = get_ray_dirs_pinhole_batched(Ks, img_width, img_height, c2w)
-
-    if hasattr(rgb_decoder, "forward_batched"):
-        rendered_rgb = rgb_decoder.forward_batched(
-            camera_ids, features, ray_dirs_world=ray_dirs_world
-        )
-    else:
-        decoded: List[torch.Tensor] = []
-        for cam_idx, cam_id in enumerate(camera_ids):
-            ray = ray_dirs_world[cam_idx] if (ray_dirs_world is not None) else None
-            decoded.append(rgb_decoder(cam_id, features[cam_idx], ray_dirs_world=ray))
-        rendered_rgb = torch.stack(decoded, dim=0)
-    return rendered_rgb, render_alphas
-
-
-def render_native(
+def render(
     means,
     quats,
     scales,
@@ -370,145 +231,107 @@ def render_native(
     return rendered_rgb, render_alphas
 
 
-def render(
-    means,
-    quats,
-    scales,
-    opacities,
-    colors,
-    viewmats,
-    Ks,
-    img_width,
-    img_height,
-    rgb_decoder=None,
-    camera_ids: Optional[Sequence[str]] = None,
-    ray_dirs_world: Optional[torch.Tensor] = None,
-):
-    if NATIVE:
-        return render_native(
-            means,
-            quats,
-            scales,
-            opacities,
-            colors,
-            viewmats,
-            Ks,
-            img_width,
-            img_height,
-            rgb_decoder=rgb_decoder,
-            camera_ids=camera_ids,
-            ray_dirs_world=ray_dirs_world,
-        )
-    else:
-        return render_gaussian_splatting(
-            means,
-            quats,
-            scales,
-            opacities,
-            colors,
-            viewmats,
-            Ks,
-            img_width,
-            img_height,
-            rgb_decoder=rgb_decoder,
-            camera_ids=camera_ids,
-            ray_dirs_world=ray_dirs_world,
+def render_sky_cubemap(
+    sky_cubemap: torch.Tensor, ray_dirs_world: torch.Tensor
+) -> torch.Tensor:
+    """Render sky colors from a learned cubemap texture.
+
+    Args:
+        sky_cubemap: Cubemap tensor with shape [6, R, R, 3].
+        ray_dirs_world: Per-pixel world ray directions [C, H, W, 3].
+
+    Returns:
+        Sky colors [C, H, W, 3] in approximately [0, 1].
+    """
+    if (
+        sky_cubemap.dim() != 4
+        or sky_cubemap.shape[0] != 6
+        or sky_cubemap.shape[-1] != 3
+    ):
+        raise ValueError(
+            f"sky_cubemap期望形状为[6,R,R,3]，实际为{tuple(sky_cubemap.shape)}"
         )
 
+    dirs = torch.nn.functional.normalize(ray_dirs_world, dim=-1, eps=1e-8)
+    C, H, W, _ = dirs.shape
+    dirs_flat = dirs.reshape(-1, 3)
 
-def generate_point_cloud(
-    azimuth_resolution: float,
-    min_azimuth: float,
-    max_azimuth: float,
-    n_elevation_channels: int,
-    min_elevation: float,
-    max_elevation: float,
-    device: torch.device,
-):
-    """生成用于渲染的点云（方位、俯仰、距离、时间偏移、强度）。"""
-    azimuths = torch.linspace(
-        min_azimuth,
-        max_azimuth - azimuth_resolution,
-        int((max_azimuth - azimuth_resolution - min_azimuth) / azimuth_resolution) + 1,
-        device=device,
-    )
-    elevations = torch.linspace(
-        min_elevation,
-        max_elevation,
-        n_elevation_channels,
-        device=device,
-    )
-    azim_elev = torch.meshgrid(azimuths, elevations, indexing="ij")
-    azim_elev = torch.stack(azim_elev, dim=-1)
-    azim_elev = azim_elev + torch.randn_like(azim_elev) * 0.001
-    pc_range = torch.randn_like(azim_elev[..., 0]).abs() * 50 + 2
-    pc_azim_elev_range = torch.cat([azim_elev, pc_range.unsqueeze(-1)], dim=-1)
+    x = dirs_flat[:, 0]
+    y = dirs_flat[:, 1]
+    z = dirs_flat[:, 2]
+    ax = x.abs()
+    ay = y.abs()
+    az = z.abs()
 
-    _pc_xyz = torch.stack(
-        [
-            torch.cos(azim_elev[..., 1].deg2rad())
-            * torch.cos(azim_elev[..., 0].deg2rad())
-            * pc_range,
-            torch.cos(azim_elev[..., 1].deg2rad())
-            * torch.sin(azim_elev[..., 0].deg2rad())
-            * pc_range,
-            torch.sin(azim_elev[..., 1].deg2rad()) * pc_range,
-        ],
-        dim=-1,
-    )
+    max_axis = torch.stack((ax, ay, az), dim=-1).argmax(dim=-1)
+    is_x = max_axis == 0
+    is_y = max_axis == 1
+    is_z = max_axis == 2
 
-    range_filter = pc_range <= pc_range.quantile(0.7)
-    pc_azim_elev_range = pc_azim_elev_range[range_filter]
+    face = torch.empty_like(max_axis, dtype=torch.long)
+    gx = torch.empty_like(x)
+    gy = torch.empty_like(y)
 
-    pc_timeoffset = (torch.rand_like(pc_azim_elev_range[..., 0:1]) - 0.5) * 0.1
-    pc_intensity = torch.rand_like(pc_azim_elev_range[..., 0:1])
-    point_cloud = torch.cat([pc_azim_elev_range, pc_timeoffset, pc_intensity], dim=-1)
+    pos_x = is_x & (x >= 0)
+    neg_x = is_x & (x < 0)
+    pos_y = is_y & (y >= 0)
+    neg_y = is_y & (y < 0)
+    pos_z = is_z & (z >= 0)
+    neg_z = is_z & (z < 0)
 
-    return point_cloud, azimuths, elevations
+    face[pos_x] = 0
+    a = ax[pos_x].clamp_min(1e-8)
+    gx[pos_x] = (-z[pos_x]) / a
+    gy[pos_x] = (-y[pos_x]) / a
 
+    face[neg_x] = 1
+    a = ax[neg_x].clamp_min(1e-8)
+    gx[neg_x] = (z[neg_x]) / a
+    gy[neg_x] = (-y[neg_x]) / a
 
-def build_raster_pts(
-    point_cloud: torch.Tensor,
-    azimuths: torch.Tensor,
-    elevations: torch.Tensor,
-    azimuth_resolution: float,
-    min_azimuth: float,
-    tile_width: int,
-    tile_height: int,
-):
-    """根据点云与瓦片设置生成 raster_pts 与边界/偏移。"""
-    elevation_boundaries = torch.cat([
-        elevations[0:1] - 1.0,
-        (
-            elevations[tile_height::tile_height]
-            + elevations[tile_height - 1 : -1 : tile_height]
-        )
-        / 2,
-        elevations[-1:] + 1.0,
-    ])
+    face[pos_y] = 2
+    a = ay[pos_y].clamp_min(1e-8)
+    gx[pos_y] = (x[pos_y]) / a
+    gy[pos_y] = (z[pos_y]) / a
 
-    points_tile_ids, flatten_ids = map_points_to_lidar_tiles(
-        points2d=point_cloud[None, :, :2],
-        elev_boundaries=elevation_boundaries,
-        tile_azim_resolution=azimuth_resolution * tile_width,
-        min_azim=min_azimuth,
-    )
+    face[neg_y] = 3
+    a = ay[neg_y].clamp_min(1e-8)
+    gx[neg_y] = (x[neg_y]) / a
+    gy[neg_y] = (-z[neg_y]) / a
 
-    tile_offsets = points_mapping_offset_encode(
-        points_tile_ids,
-        1,
-        math.ceil((azimuths[-1] - azimuths[0]) / (azimuth_resolution * tile_width)),
-        len(elevations) // tile_height,
-    )
+    face[pos_z] = 4
+    a = az[pos_z].clamp_min(1e-8)
+    gx[pos_z] = (x[pos_z]) / a
+    gy[pos_z] = (-y[pos_z]) / a
 
-    raster_pts = populate_image_from_points(
-        point_cloud[None],
-        image_width=len(azimuths),
-        image_height=len(elevations),
-        tile_width=tile_width,
-        tile_height=tile_height,
-        tile_offsets=tile_offsets,
-        flatten_id=flatten_ids,
-    )
+    face[neg_z] = 5
+    a = az[neg_z].clamp_min(1e-8)
+    gx[neg_z] = (-x[neg_z]) / a
+    gy[neg_z] = (-y[neg_z]) / a
 
-    return raster_pts, elevation_boundaries
+    gx = gx.clamp(-1.0, 1.0)
+    gy = gy.clamp(-1.0, 1.0)
+
+    tex = sky_cubemap.sigmoid()
+    resolution = int(tex.shape[1])
+    px = (gx + 1.0) * 0.5 * resolution - 0.5
+    py = (gy + 1.0) * 0.5 * resolution - 0.5
+
+    x0 = px.floor().to(torch.long).clamp(0, resolution - 1)
+    y0 = py.floor().to(torch.long).clamp(0, resolution - 1)
+    x1 = (x0 + 1).clamp(0, resolution - 1)
+    y1 = (y0 + 1).clamp(0, resolution - 1)
+
+    wx = (px - x0.to(px.dtype)).unsqueeze(-1)
+    wy = (py - y0.to(py.dtype)).unsqueeze(-1)
+
+    c00 = tex[face, y0, x0]
+    c10 = tex[face, y0, x1]
+    c01 = tex[face, y1, x0]
+    c11 = tex[face, y1, x1]
+
+    c0 = c00 * (1 - wx) + c10 * wx
+    c1 = c01 * (1 - wx) + c11 * wx
+    colors = c0 * (1 - wy) + c1 * wy
+
+    return colors.view(C, H, W, 3)

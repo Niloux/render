@@ -7,12 +7,43 @@ import torch
 
 from .gs_component import GaussianComponent
 
+SCENE_KEYS = {
+    "iter",
+    "raster_pts",
+    "rgb_decoder",
+    "MLPDecoder",
+    "mlp_decoder",
+    "lidar_decoder",
+    "center_point",
+    "sphere_center",
+    "sphere_radius",
+    "sky_cubemap",
+}
+COMPONENT_REQUIRED_KEYS = (
+    "xyz",
+    "feature_dc",
+    "feature_rest",
+    "scaling",
+    "rotation",
+    "opacity",
+)
+MLP_DECODER_KEYS = ("MLPDecoder", "mlp_decoder", "lidar_decoder")
+
 
 def _as_f32_tensor(value) -> torch.Tensor:
     """将checkpoint里的场景参数统一转为float32 Tensor。"""
     if isinstance(value, torch.Tensor):
         return value.to(dtype=torch.float32)
     return torch.as_tensor(value, dtype=torch.float32)
+
+
+def _optional_decoder_state(checkpoint: dict, keys: tuple[str, ...]) -> Optional[dict]:
+    """按候选键查找decoder权重，返回第一个dict类型的权重。"""
+    for key in keys:
+        value = checkpoint.get(key)
+        if isinstance(value, dict):
+            return value
+    return None
 
 
 class GSModel:
@@ -27,6 +58,7 @@ class GSModel:
         self.iteration: int = 0
         self.raster_pts: Optional[torch.Tensor] = None
         self.rgb_decoder_state: Optional[dict] = None
+        self.mlp_decoder_state: Optional[dict] = None
 
         self.map_center: Optional[torch.Tensor] = None
         self.sky_center: Optional[torch.Tensor] = None
@@ -34,103 +66,103 @@ class GSModel:
         self.sky_cubemap: Optional[torch.Tensor] = None
 
     @classmethod
-    def load_from_pth(cls, pth_path: Union[str, Path]) -> "GSModel":  # noqa: C901
+    def load_from_pth(cls, pth_path: Union[str, Path], strict: bool = True) -> "GSModel":
         """从PTH文件加载模型。
 
         Args:
             pth_path: PTH文件路径
+            strict: 为True时组件验证失败会抛出异常；为False时跳过无效组件
 
         Returns:
             加载的GSModel实例
         """
+        pth_path = Path(pth_path)
+        if not pth_path.is_file():
+            raise FileNotFoundError(f"模型文件不存在: {pth_path}")
+
         checkpoint = torch.load(pth_path, map_location="cpu", weights_only=False)
+        if not isinstance(checkpoint, dict):
+            raise ValueError(f"模型checkpoint必须是dict，实际为{type(checkpoint)!r}")
+
         model = cls()
 
-        # 加载迭代次数
-        if "iter" in checkpoint:
-            model.iteration = checkpoint["iter"]
-
-        # 加载raster_pts
-        if "raster_pts" in checkpoint:
-            model.raster_pts = checkpoint["raster_pts"]
-
-        if "rgb_decoder" in checkpoint:
-            model.rgb_decoder_state = checkpoint["rgb_decoder"]
-
-        try:
-            model.map_center = _as_f32_tensor(checkpoint["center_point"])  # [3]
-        except KeyError as e:
-            raise KeyError("pth缺少场景参数键: 需要center_point") from e
-
-        if "sphere_center" in checkpoint and "sphere_radius" in checkpoint:
-            model.sky_center = _as_f32_tensor(checkpoint["sphere_center"])  # [3]
-            model.sky_radius = _as_f32_tensor(checkpoint["sphere_radius"])  # [1]
-
-        sky_cubemap = checkpoint.get("sky_cubemap")
-        if (
-            isinstance(sky_cubemap, dict)
-            and "params" in sky_cubemap
-            and hasattr(sky_cubemap["params"], "get")
-        ):
-            cube = sky_cubemap["params"].get("sky_cube_map")
-            if cube is not None:
-                model.sky_cubemap = _as_f32_tensor(cube)
-
-        # 加载各个组件
-        for name, data in checkpoint.items():
-            if name in (
-                "iter",
-                "raster_pts",
-                "rgb_decoder",
-                "center_point",
-                "sphere_center",
-                "sphere_radius",
-                "sky_cubemap",
-            ):
-                continue
-
-            if isinstance(data, dict) and len(data) > 0:
-                # 检查是否包含必要的键
-                required_keys = [
-                    "xyz",
-                    "feature_dc",
-                    "feature_rest",
-                    "scaling",
-                    "rotation",
-                    "opacity",
-                ]
-                if all(key in data for key in required_keys):
-                    if name == "sky":
-                        component = GaussianComponent(
-                            name=name,
-                            xyz=data["xyz"],
-                            feature_dc=data["feature_dc"],
-                            feature_rest=data["feature_rest"],
-                            scaling=data["scaling"],
-                            rotation=data["rotation"],
-                            opacity=data["opacity"],
-                            semantic=data.get("semantic"),
-                            sky_center=model.sky_center,
-                            sky_radius=model.sky_radius,
-                        )
-                    else:
-                        component = GaussianComponent(
-                            name=name,
-                            xyz=data["xyz"],
-                            feature_dc=data["feature_dc"],
-                            feature_rest=data["feature_rest"],
-                            scaling=data["scaling"],
-                            rotation=data["rotation"],
-                            opacity=data["opacity"],
-                            semantic=data.get("semantic"),
-                        )
-
-                    if component.validate():
-                        model.components[name] = component
-                    else:
-                        print(f"警告: 组件 {name} 数据验证失败，跳过加载")
+        model._load_scene_metadata(checkpoint)
+        model._load_components(checkpoint, strict=strict)
+        model.validate_for_render()
 
         return model
+
+    def _load_scene_metadata(self, checkpoint: dict) -> None:
+        """加载非高斯组件的场景元数据和decoder权重。"""
+        self.iteration = int(checkpoint.get("iter", 0))
+        self.raster_pts = checkpoint.get("raster_pts")
+        self.rgb_decoder_state = checkpoint.get("rgb_decoder")
+        self.mlp_decoder_state = _optional_decoder_state(checkpoint, MLP_DECODER_KEYS)
+
+        if "center_point" not in checkpoint:
+            raise KeyError("pth缺少场景参数键: 需要center_point")
+        self.map_center = _as_f32_tensor(checkpoint["center_point"])
+        if self.map_center.shape != (3,):
+            raise ValueError(
+                f"center_point期望形状为(3,)，实际为{tuple(self.map_center.shape)}"
+            )
+
+        if "sphere_center" in checkpoint and "sphere_radius" in checkpoint:
+            self.sky_center = _as_f32_tensor(checkpoint["sphere_center"])
+            self.sky_radius = _as_f32_tensor(checkpoint["sphere_radius"])
+
+        sky_cubemap = checkpoint.get("sky_cubemap")
+        params = sky_cubemap.get("params") if isinstance(sky_cubemap, dict) else None
+        cube = params.get("sky_cube_map") if hasattr(params, "get") else None
+        if cube is not None:
+            self.sky_cubemap = _as_f32_tensor(cube)
+
+    def _load_components(self, checkpoint: dict, strict: bool) -> None:
+        """加载checkpoint中的高斯组件。"""
+        errors = []
+        for name, data in checkpoint.items():
+            if name in SCENE_KEYS or not isinstance(data, dict) or not data:
+                continue
+            if not all(key in data for key in COMPONENT_REQUIRED_KEYS):
+                continue
+
+            component = self._build_component(name, data)
+            if component.validate():
+                self.components[name] = component
+                continue
+
+            message = f"组件 {name} 数据验证失败"
+            if strict:
+                errors.append(message)
+
+        if errors:
+            raise ValueError("; ".join(errors))
+
+    def _build_component(self, name: str, data: dict) -> GaussianComponent:
+        """从checkpoint字段构建单个高斯组件。"""
+        sky_args = {}
+        if name == "sky":
+            sky_args = {"sky_center": self.sky_center, "sky_radius": self.sky_radius}
+        return GaussianComponent(
+            name=name,
+            xyz=data["xyz"],
+            feature_dc=data["feature_dc"],
+            feature_rest=data["feature_rest"],
+            scaling=data["scaling"],
+            rotation=data["rotation"],
+            opacity=data["opacity"],
+            semantic=data.get("semantic"),
+            **sky_args,
+        )
+
+    def validate_for_render(self) -> None:
+        """校验render_frame最小依赖的数据。"""
+        if self.map_center is None:
+            raise ValueError("模型缺少center_point，无法进行ego坐标转换")
+        if "background" not in self.components:
+            raise ValueError("模型缺少background组件，无法渲染")
+        if not self.components:
+            raise ValueError("模型没有可用高斯组件")
 
     def save_to_pth(self, pth_path: Union[str, Path]) -> None:
         """保存模型到PTH文件。
@@ -138,23 +170,26 @@ class GSModel:
         Args:
             pth_path: 保存路径
         """
-        if (
-            self.map_center is None
-            or self.sky_center is None
-            or self.sky_radius is None
+        if self.map_center is None:
+            raise ValueError("保存pth前必须设置map_center")
+        if "sky" in self.components and (
+            self.sky_center is None or self.sky_radius is None
         ):
-            raise ValueError("保存pth前必须设置map_center/sky_center/sky_radius")
+            raise ValueError("保存包含sky组件的pth前必须设置sky_center/sky_radius")
 
         checkpoint = {
             "iter": self.iteration,
             "center_point": self.map_center,
-            "sphere_center": self.sky_center,
-            "sphere_radius": self.sky_radius,
         }
+        if self.sky_center is not None and self.sky_radius is not None:
+            checkpoint["sphere_center"] = self.sky_center
+            checkpoint["sphere_radius"] = self.sky_radius
         if self.raster_pts is not None:
             checkpoint["raster_pts"] = self.raster_pts
         if self.rgb_decoder_state is not None:
             checkpoint["rgb_decoder"] = self.rgb_decoder_state
+        if self.mlp_decoder_state is not None:
+            checkpoint["MLPDecoder"] = self.mlp_decoder_state
 
         for name, component in self.components.items():
             data = {
@@ -247,6 +282,7 @@ class GSModel:
         new_model = GSModel()
         new_model.iteration = self.iteration
         new_model.rgb_decoder_state = self.rgb_decoder_state
+        new_model.mlp_decoder_state = self.mlp_decoder_state
         if self.raster_pts is not None:
             new_model.raster_pts = self.raster_pts.to(device)
 

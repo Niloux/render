@@ -1,62 +1,124 @@
+#!/usr/bin/env python3
+"""Inspect and validate render checkpoint files."""
+
+import argparse
+import sys
+from pathlib import Path
+from typing import Any
+
 import torch
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
-def load_and_inspect_pth(pth_path):  # noqa: C901
-    """
-    加载pth文件并检查其数据结构
+from models import GSModel  # noqa: E402
 
-    Args:
-        pth_path (str): pth文件的路径
-    """
+
+def format_shape(value: Any) -> str:
+    if isinstance(value, torch.Tensor):
+        return f"{tuple(value.shape)} {value.dtype}"
+    return type(value).__name__
+
+
+def format_count(value: int) -> str:
+    return f"{value:,}"
+
+
+def print_raw_structure(path: Path) -> None:
+    checkpoint = torch.load(path, map_location="cpu", weights_only=False)
+    print("\nRaw Checkpoint")
+    print(f"- type: {type(checkpoint).__name__}")
+    if not isinstance(checkpoint, dict):
+        return
+
+    print(f"- keys: {len(checkpoint)}")
+    for key, value in checkpoint.items():
+        if isinstance(value, torch.Tensor):
+            print(f"- {key}: Tensor {format_shape(value)}")
+        elif isinstance(value, dict):
+            print(f"- {key}: Dict ({len(value)} keys)")
+            for sub_key, sub_value in value.items():
+                print(f"  - {sub_key}: {format_shape(sub_value)}")
+        else:
+            print(f"- {key}: {type(value).__name__}")
+
+
+def print_model_summary(model: GSModel, path: Path, show_components: bool) -> None:
+    background = model.get_component("background")
+    sky = model.get_component("sky")
+    actors = model.get_components_by_type("obj")
+
+    print("Checkpoint")
+    print(f"- path: {path}")
+    print(f"- iteration: {model.iteration}")
+    print(f"- components: {len(model.components)}")
+    print(f"- total_points: {format_count(model.total_points)}")
+    print(f"- estimated_tensor_memory: {model.total_memory:.2f} MB")
+
+    print("\nRender Readiness")
+    print(f"- background: {'yes' if background is not None else 'no'}")
+    print(f"- map_center: {format_shape(model.map_center)}")
+    print(f"- sky_component: {'yes' if sky is not None else 'no'}")
+    print(f"- sky_cubemap: {format_shape(model.sky_cubemap) if model.sky_cubemap is not None else 'no'}")
+    print(f"- actor_components: {len(actors)}")
+    print(f"- rgb_decoder: {'yes' if model.rgb_decoder_state is not None else 'no'}")
+    print(f"- lidar_raster_pts: {format_shape(model.raster_pts) if model.raster_pts is not None else 'no'}")
+    print(f"- mlp_decoder: {'yes' if model.mlp_decoder_state is not None else 'no'}")
+
+    if not show_components:
+        return
+
+    print("\nComponents")
+    for name in sorted(model.component_names):
+        component = model.get_component(name)
+        if component is None:
+            continue
+        color_channels = int(component.feature_dc.shape[-1])
+        print(
+            f"- {name}: points={format_count(component.num_points)}, "
+            f"channels={color_channels}, memory={component.memory_usage:.2f} MB"
+        )
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Validate a render .pth checkpoint against current GSModel loading rules."
+    )
+    parser.add_argument("path", type=Path, help="Path to the .pth checkpoint")
+    parser.add_argument(
+        "--raw",
+        action="store_true",
+        help="Also print the raw top-level checkpoint structure.",
+    )
+    parser.add_argument(
+        "--components",
+        action="store_true",
+        help="Print one summary line per Gaussian component.",
+    )
+    parser.add_argument(
+        "--non-strict",
+        action="store_true",
+        help="Skip invalid components instead of failing on component validation errors.",
+    )
+    return parser.parse_args()
+
+
+def main() -> int:
+    args = parse_args()
+    path = args.path.expanduser().resolve()
+
     try:
-        # 加载pth文件
-        checkpoint = torch.load(pth_path, map_location="cpu", weights_only=False)
+        model = GSModel.load_from_pth(path, strict=not args.non_strict)
+        print_model_summary(model, path, show_components=args.components)
+        if args.raw:
+            print_raw_structure(path)
+    except Exception as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
 
-        print(f"=== PTH文件结构分析: {pth_path} ===")
-        print(f"数据类型: {type(checkpoint)}")
-
-        if isinstance(checkpoint, dict):
-            print(f"\n字典键数量: {len(checkpoint)}")
-            print("\n主要键名:")
-            for key in checkpoint.keys():
-                value = checkpoint[key]
-                if isinstance(value, torch.Tensor):
-                    print(f"  {key}: Tensor {value.shape} ({value.dtype})")
-                elif isinstance(value, dict):
-                    print(f"  {key}: Dict (包含 {len(value)} 个子项)")
-                elif isinstance(value, (int, float, str)):
-                    print(f"  {key}: {type(value).__name__} = {value}")
-                else:
-                    print(f"  {key}: {type(value).__name__}")
-
-            # 详细检查每个键的内容
-            print("\n=== 详细结构 ===")
-            for key, value in checkpoint.items():
-                print(f"\n[{key}]:")
-                if isinstance(value, torch.Tensor):
-                    print(f"  形状: {value.shape}")
-                    print(f"  数据类型: {value.dtype}")
-                    print(f"  设备: {value.device}")
-                    if value.numel() < 10:
-                        print(f"  值: {value}")
-                elif isinstance(value, dict):
-                    print(f"  子字典包含 {len(value)} 个键:")
-                    for sub_key, sub_value in value.items():
-                        if isinstance(sub_value, torch.Tensor):
-                            print(f"    {sub_key}: Tensor {sub_value.shape}")
-                        else:
-                            print(f"    {sub_key}: {type(sub_value).__name__}")
-                else:
-                    print(f"  值: {value}")
-
-        return checkpoint
-
-    except Exception as e:
-        print(f"加载失败: {e}")
-        return None
+    return 0
 
 
 if __name__ == "__main__":
-    pth_path = "/home/saimo/work/render/WMX0423-第一套数据100帧迭代30000轮高斯天空.pth"
-
-    checkpoint = load_and_inspect_pth(pth_path)
+    raise SystemExit(main())

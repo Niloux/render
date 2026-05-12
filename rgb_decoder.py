@@ -48,11 +48,6 @@ def get_expon_lr_func(
     return helper
 
 
-def assert_not_none(value):
-    assert value is not None
-    return value
-
-
 class ResidualBlock(nn.Module):
     """Abstract Residual Block class."""
 

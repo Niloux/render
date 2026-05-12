@@ -250,24 +250,6 @@ def load_sensors_from_json(
     return cameras, lidars
 
 
-def load_cameras_from_json(
-    path: str, default_width: int, default_height: int
-) -> List[Camera]:
-    """从 JSON 文件加载相机配置。"""
-    with open(path, "r", encoding="utf-8") as f:
-        data = json.load(f)
-
-    specs: Any
-    if isinstance(data, dict) and "cameras" in data:
-        specs = data["cameras"]
-    else:
-        specs = data
-
-    return load_cameras_from_specs(
-        specs, default_width=default_width, default_height=default_height
-    )
-
-
 def create_test_cameras(count: int, width: int, height: int) -> List[Camera]:
     """创建测试相机列表"""
     return [
@@ -280,20 +262,6 @@ def create_test_cameras(count: int, width: int, height: int) -> List[Camera]:
         )
         for i in range(count)
     ]
-
-
-def load_lidars_from_json(path: str) -> List[Lidar]:
-    """从 JSON 文件加载激光雷达配置。"""
-    with open(path, "r", encoding="utf-8") as f:
-        data = json.load(f)
-
-    specs: Any
-    if isinstance(data, dict) and "lidars" in data:
-        specs = data["lidars"]
-    else:
-        specs = data
-
-    return load_lidars_from_specs(specs)
 
 
 def create_test_lidars(count: int) -> List[Lidar]:
