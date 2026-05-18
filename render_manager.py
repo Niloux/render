@@ -33,20 +33,48 @@ class RenderManager:
         self._configure_torch_backends(enable_torch_backends)
         self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
         self.model_path = model
-        self.model = GSModel.load_from_pth(model).to_device(self.device)
-        self.model.validate_for_render()
-        self.background = self._required_component("background")
-        self.sky: GaussianComponent | None = self.model.get_component("sky")
-        self.sky_cubemap: torch.Tensor | None = getattr(self.model, "sky_cubemap", None)
-        self.actors: List[GaussianComponent] = self.model.get_components_by_type("obj")
-        self.map_center = self._required_tensor("map_center").to(self.device)
+        self.camera_model = GSModel.load_from_pth(
+            model, group="camera"
+        ).to_device(self.device)
+        self.lidar_model = GSModel.load_from_pth(
+            model, group="lidar"
+        ).to_device(self.device)
+        self.model = self.camera_model
+
+        self.camera_background = self._required_component(
+            self.camera_model, "background"
+        )
+        self.lidar_background = self._required_component(self.lidar_model, "background")
+        self.sky: GaussianComponent | None = self.camera_model.get_component("sky")
+        self.sky_cubemap: torch.Tensor | None = getattr(
+            self.camera_model, "sky_cubemap", None
+        )
+        self.camera_actors: List[GaussianComponent] = (
+            self.camera_model.get_components_by_type("obj")
+        )
+        self.lidar_actors: List[GaussianComponent] = (
+            self.lidar_model.get_components_by_type("obj")
+        )
+        self.map_center = self._required_tensor(self.camera_model, "map_center").to(
+            self.device
+        )
+        self.lidar_map_center = self._required_tensor(
+            self.lidar_model, "map_center"
+        ).to(self.device)
 
         self.actor_map: Dict[str, GaussianComponent] = {
-            actor.name: actor for actor in self.actors
+            actor.name: actor for actor in self.camera_actors
         }
-        self.buffers: RenderBuffers = build_render_buffers(
-            self.background, self.sky, self.actors, self.device
+        self.lidar_actor_map: Dict[str, GaussianComponent] = {
+            actor.name: actor for actor in self.lidar_actors
+        }
+        self.camera_buffers: RenderBuffers = build_render_buffers(
+            self.camera_background, self.sky, self.camera_actors, self.device
         )
+        self.lidar_buffers: RenderBuffers = build_render_buffers(
+            self.lidar_background, None, self.lidar_actors, self.device
+        )
+        self.buffers = self.camera_buffers
         self.cameras: Dict[Tuple[int, int], List[Camera]] = {}
         self.camera_data: Dict[Tuple[int, int], Dict[str, Any]] = {}
         self.lidars: Dict[str, Lidar] = {}
@@ -62,16 +90,18 @@ class RenderManager:
         self._frame_json_loaded: bool = False
         self._frame_json_path: Optional[str] = None
 
-    def _required_component(self, name: str) -> GaussianComponent:
-        component = self.model.get_component(name)
+    def _required_component(self, model: GSModel, name: str) -> GaussianComponent:
+        component = model.get_component(name)
         if component is None:
-            raise ValueError(f"pth中缺少{name}组件，无法渲染")
+            raise ValueError(f"pth的{model.group}子模型缺少{name}组件，无法渲染")
         return component
 
-    def _required_tensor(self, attr_name: str) -> torch.Tensor:
-        value = getattr(self.model, attr_name, None)
+    def _required_tensor(self, model: GSModel, attr_name: str) -> torch.Tensor:
+        value = getattr(model, attr_name, None)
         if not isinstance(value, torch.Tensor):
-            raise ValueError(f"pth中缺少{attr_name}(scene参数)，无法渲染")
+            raise ValueError(
+                f"pth的{model.group}子模型缺少{attr_name}(scene参数)，无法渲染"
+            )
         return value
 
     @staticmethod
@@ -109,7 +139,7 @@ class RenderManager:
         if self.render_camera:
             self.cameras = group_cameras_by_resolution(cameras)
             rgb_decoder_state, num_cams_ckpt = get_rgb_decoder_state_and_num_cams(
-                getattr(self.model, "rgb_decoder_state", None), cameras
+                getattr(self.camera_model, "rgb_decoder_state", None), cameras
             )
             if len(cameras) > num_cams_ckpt:
                 raise ValueError(
@@ -121,9 +151,14 @@ class RenderManager:
             )
             self.camera_data = build_camera_data(self.cameras, self.device)
 
-        self.lidars, self.lidar_data = build_lidar_data(params.lidars, self.device)
+        self.lidars, self.lidar_data = build_lidar_data(
+            params.lidars, self.device, self.lidar_model.raster_pts
+        )
         self.mlp_decoder, self.lidar_id_to_index = init_mlp_decoder(
-            self.render_lidar, params.lidars, self.model.mlp_decoder_state, self.device
+            self.render_lidar,
+            params.lidars,
+            self.lidar_model.mlp_decoder_state,
+            self.device,
         )
         self._initialized = True
         return InitResp(init_status=True)
@@ -152,17 +187,35 @@ class RenderManager:
             - self.map_center
         )
 
-        dynamic_points = update_dynamic_buffer(
-            self.buffers,
-            self.actor_map,
-            params.env_vehicles or [],
-            self.map_center,
-            self.device,
-        )
-        render_params = self.buffers.render_params(dynamic_points)
+        images = {}
+        if self.render_camera:
+            dynamic_points = update_dynamic_buffer(
+                self.camera_buffers,
+                self.actor_map,
+                params.env_vehicles or [],
+                self.map_center,
+                self.device,
+            )
+            render_params = self.camera_buffers.render_params(dynamic_points)
+            images = self._render_cameras(ego_heading, ego_position, render_params)
 
-        images = self._render_cameras(ego_heading, ego_position, render_params)
-        lidars = self._render_lidars(ego_heading, ego_position, render_params)
+        lidar_position = (
+            torch.tensor(
+                params.ego_trajectory, device=self.device, dtype=torch.float32
+            )
+            - self.lidar_map_center
+        )
+        lidars = {}
+        if self.render_lidar:
+            dynamic_points = update_dynamic_buffer(
+                self.lidar_buffers,
+                self.lidar_actor_map,
+                params.env_vehicles or [],
+                self.lidar_map_center,
+                self.device,
+            )
+            render_params = self.lidar_buffers.render_params(dynamic_points)
+            lidars = self._render_lidars(ego_heading, lidar_position, render_params)
 
         return FrameResp(
             timestamp=params.timestamp, images=images, error_msg=None, lidars=lidars
@@ -181,8 +234,8 @@ class RenderManager:
             ego_position,
             render_params,
             self.rgb_decoder,
-            self.buffers.sky_data,
-            self.buffers.sky_points,
+            self.camera_buffers.sky_data,
+            self.camera_buffers.sky_points,
             self.sky_cubemap,
         )
 
@@ -199,5 +252,5 @@ class RenderManager:
             ego_position,
             render_params,
             self.mlp_decoder,
-            self.buffers.zero_velocities,
+            self.lidar_buffers.zero_velocities,
         )

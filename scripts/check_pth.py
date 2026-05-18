@@ -51,6 +51,7 @@ def print_model_summary(model: GSModel, path: Path, show_components: bool) -> No
 
     print("Checkpoint")
     print(f"- path: {path}")
+    print(f"- group: {model.group}")
     print(f"- iteration: {model.iteration}")
     print(f"- components: {len(model.components)}")
     print(f"- total_points: {format_count(model.total_points)}")
@@ -97,6 +98,12 @@ def parse_args() -> argparse.Namespace:
         help="Print one summary line per Gaussian component.",
     )
     parser.add_argument(
+        "--group",
+        choices=("camera", "lidar", "all"),
+        default="all",
+        help="Which new-format checkpoint group to validate.",
+    )
+    parser.add_argument(
         "--non-strict",
         action="store_true",
         help="Skip invalid components instead of failing on component validation errors.",
@@ -109,8 +116,14 @@ def main() -> int:
     path = args.path.expanduser().resolve()
 
     try:
-        model = GSModel.load_from_pth(path, strict=not args.non_strict)
-        print_model_summary(model, path, show_components=args.components)
+        groups = ("camera", "lidar") if args.group == "all" else (args.group,)
+        for index, group in enumerate(groups):
+            if index:
+                print()
+            model = GSModel.load_from_pth(
+                path, group=group, strict=not args.non_strict
+            )
+            print_model_summary(model, path, show_components=args.components)
         if args.raw:
             print_raw_structure(path)
     except Exception as exc:

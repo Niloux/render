@@ -18,6 +18,7 @@ SCENE_KEYS = {
     "sphere_center",
     "sphere_radius",
     "sky_cubemap",
+    "actor_pose",
 }
 COMPONENT_REQUIRED_KEYS = (
     "xyz",
@@ -28,6 +29,7 @@ COMPONENT_REQUIRED_KEYS = (
     "opacity",
 )
 MLP_DECODER_KEYS = ("MLPDecoder", "mlp_decoder", "lidar_decoder")
+CHECKPOINT_GROUPS = ("camera", "lidar")
 
 
 def _as_f32_tensor(value) -> torch.Tensor:
@@ -56,6 +58,7 @@ class GSModel:
         """初始化空的GSModel。"""
         self.components: Dict[str, GaussianComponent] = {}
         self.iteration: int = 0
+        self.group: str = "camera"
         self.raster_pts: Optional[torch.Tensor] = None
         self.rgb_decoder_state: Optional[dict] = None
         self.mlp_decoder_state: Optional[dict] = None
@@ -66,11 +69,17 @@ class GSModel:
         self.sky_cubemap: Optional[torch.Tensor] = None
 
     @classmethod
-    def load_from_pth(cls, pth_path: Union[str, Path], strict: bool = True) -> "GSModel":
+    def load_from_pth(
+        cls,
+        pth_path: Union[str, Path],
+        group: str = "camera",
+        strict: bool = True,
+    ) -> "GSModel":
         """从PTH文件加载模型。
 
         Args:
             pth_path: PTH文件路径
+            group: 新checkpoint中的渲染子模型，支持camera或lidar
             strict: 为True时组件验证失败会抛出异常；为False时跳过无效组件
 
         Returns:
@@ -80,17 +89,40 @@ class GSModel:
         if not pth_path.is_file():
             raise FileNotFoundError(f"模型文件不存在: {pth_path}")
 
-        checkpoint = torch.load(pth_path, map_location="cpu", weights_only=False)
-        if not isinstance(checkpoint, dict):
-            raise ValueError(f"模型checkpoint必须是dict，实际为{type(checkpoint)!r}")
+        checkpoint_root = torch.load(pth_path, map_location="cpu", weights_only=False)
+        if not isinstance(checkpoint_root, dict):
+            raise ValueError(f"模型checkpoint必须是dict，实际为{type(checkpoint_root)!r}")
 
         model = cls()
+        model.group = group
 
+        checkpoint = cls._select_checkpoint_group(checkpoint_root, group)
         model._load_scene_metadata(checkpoint)
         model._load_components(checkpoint, strict=strict)
         model.validate_for_render()
 
         return model
+
+    @staticmethod
+    def _select_checkpoint_group(checkpoint_root: dict, group: str) -> dict:
+        """读取新checkpoint中的camera/lidar子树并补齐共享元数据。"""
+        if group not in CHECKPOINT_GROUPS:
+            raise ValueError(f"group必须是{CHECKPOINT_GROUPS}之一，实际为{group!r}")
+        if group not in checkpoint_root or not isinstance(checkpoint_root[group], dict):
+            raise KeyError(f"pth缺少{group}子模型")
+
+        checkpoint = dict(checkpoint_root[group])
+        checkpoint.setdefault("iter", checkpoint_root.get("iter", 0))
+
+        if "center_point" not in checkpoint:
+            camera_checkpoint = checkpoint_root.get("camera")
+            if (
+                isinstance(camera_checkpoint, dict)
+                and "center_point" in camera_checkpoint
+            ):
+                checkpoint["center_point"] = camera_checkpoint["center_point"]
+
+        return checkpoint
 
     def _load_scene_metadata(self, checkpoint: dict) -> None:
         """加载非高斯组件的场景元数据和decoder权重。"""
@@ -205,7 +237,7 @@ class GSModel:
                 data["semantic"] = component.semantic
             checkpoint[name] = data
 
-        torch.save(checkpoint, pth_path)
+        torch.save({"iter": self.iteration, self.group: checkpoint}, pth_path)
 
     def add_component(self, component: GaussianComponent) -> None:
         """添加组件。
@@ -280,6 +312,7 @@ class GSModel:
             新的GSModel实例
         """
         new_model = GSModel()
+        new_model.group = self.group
         new_model.iteration = self.iteration
         new_model.rgb_decoder_state = self.rgb_decoder_state
         new_model.mlp_decoder_state = self.mlp_decoder_state
@@ -308,6 +341,7 @@ class GSModel:
         """获取模型摘要信息。"""
         lines = [
             "GSModel Summary:",
+            f"  Group: {self.group}",
             f"  Iteration: {self.iteration}",
             f"  Components: {len(self.components)}",
             f"  Total Points: {self.total_points:,}",
