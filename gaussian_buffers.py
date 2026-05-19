@@ -41,6 +41,7 @@ def build_render_buffers(
         raise ValueError("静态点云组件不能为空")
 
     static_points = static_data.means.shape[0]
+    sh_coeffs = static_data.colors.shape[1]
     color_channels = static_data.colors.shape[2]
     sky_data = GaussianData.from_components([sky]) if sky is not None else None
     sky_points = sky_data.means.shape[0] if sky_data else 0
@@ -55,7 +56,7 @@ def build_render_buffers(
             (total_max_points, 1), device=device, dtype=torch.float32
         ),
         "colors": torch.empty(
-            (total_max_points, 4, color_channels),
+            (total_max_points, sh_coeffs, color_channels),
             device=device,
             dtype=torch.float32,
         ),

@@ -1,3 +1,4 @@
+import math
 import os
 from typing import List, Optional, Sequence
 
@@ -8,7 +9,14 @@ from gsplat import (
 
 _RENDER_TILE_SIZE = int(os.environ.get("RENDER_TILE_SIZE", "16"))
 _RENDER_RASTERIZE_MODE = os.environ.get("RENDER_RASTERIZE_MODE", "antialiased")
-_RENDER_RADIUS_CLIP = float(os.environ.get("RENDER_RADIUS_CLIP", "3.0"))
+_RENDER_RADIUS_CLIP = float(os.environ.get("RENDER_RADIUS_CLIP", "0.0"))
+
+
+def infer_sh_degree(num_coeffs: int) -> int:
+    degree = math.isqrt(num_coeffs) - 1
+    if (degree + 1) ** 2 != num_coeffs:
+        raise ValueError(f"SH系数数量必须是平方数，实际为{num_coeffs}")
+    return degree
 
 
 def extract_camera_centers(viewmats: torch.Tensor):
@@ -103,7 +111,7 @@ def render(
 ):
     """原生渲染接口。
 
-    - 当 rgb_decoder 为 None：沿用 gsplat.rasterization 的 SH 渲染（sh_degree=1），直接输出 RGB。
+    - 当 rgb_decoder 为 None：沿用训练端 SH 渲染，取前3个颜色通道并从系数数量推断sh_degree。
     - 当 rgb_decoder 不为 None：使用 rasterization 的 N-D features 模式（sh_degree=None）先把每个高斯的特征
       光栅化到像素，再按 camera_ids 调用 rgb_decoder 得到最终 RGB。
     """  # noqa: E501
@@ -111,8 +119,16 @@ def render(
         opacities = opacities.squeeze(1)
 
     if rgb_decoder is None:
-        if colors.dim() == 3 and colors.shape[1] == 4 and colors.shape[2] == 5:
+        if colors.dim() == 3 and colors.shape[-1] >= 3:
             colors = colors[..., :3]
+            sh_degree = infer_sh_degree(int(colors.shape[1]))
+        elif colors.dim() == 2 and colors.shape[-1] >= 3:
+            colors = colors[..., :3]
+            sh_degree = None
+        else:
+            raise ValueError(
+                f"SH渲染分支期望colors形状为[N,K,C]或[N,C]且C>=3，实际为{tuple(colors.shape)}"
+            )
 
         render_colors, render_alphas, _ = rasterization(
             means=means,
@@ -126,7 +142,7 @@ def render(
             height=img_height,
             near_plane=0.001,
             far_plane=1000,
-            sh_degree=1,
+            sh_degree=sh_degree,
             packed=True,
             tile_size=_RENDER_TILE_SIZE,
             radius_clip=_RENDER_RADIUS_CLIP,

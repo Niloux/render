@@ -52,22 +52,17 @@ def init_rgb_decoder(
     num_cams_ckpt: int,
     rgb_decoder_state: Optional[dict],
     device: torch.device,
-) -> Tuple[RGBDecoder, Dict[str, int]]:
+) -> Tuple[Optional[RGBDecoder], Dict[str, int]]:
     camera_id_to_index = {cam.id: idx for idx, cam in enumerate(cameras)}
-    if rgb_decoder_state is not None:
-        decoder = RGBDecoder.from_checkpoint_state(
-            metadata={"num_cams": num_cams_ckpt},
-            state_dict=rgb_decoder_state,
-            device=device,
-            mode="image",
-        )
-    else:
-        decoder = RGBDecoder(
-            metadata={"num_cams": num_cams_ckpt},
-            device=device,
-            use_app_embed=True,
-            mode="image",
-        )
+    if rgb_decoder_state is None:
+        return None, camera_id_to_index
+
+    decoder = RGBDecoder.from_checkpoint_state(
+        metadata={"num_cams": num_cams_ckpt},
+        state_dict=rgb_decoder_state,
+        device=device,
+        mode="image",
+    )
     decoder.camera_id_map = camera_id_to_index
     decoder.eval()
     return decoder, camera_id_to_index

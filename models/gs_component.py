@@ -1,5 +1,6 @@
 """高斯点云组件数据类。"""
 
+import math
 from dataclasses import dataclass
 from typing import Optional
 
@@ -65,8 +66,12 @@ class GaussianComponent:
             and self.feature_rest.ndim == 3
             and self.feature_dc.shape[2] >= 3
             and self.feature_rest.shape[2] == self.feature_dc.shape[2]
-            and self.feature_dc.shape[1] + self.feature_rest.shape[1] == 4
+            and self.feature_dc.shape[1] + self.feature_rest.shape[1] > 0
         ):
+            return False
+
+        num_sh_coeffs = int(self.feature_dc.shape[1] + self.feature_rest.shape[1])
+        if math.isqrt(num_sh_coeffs) ** 2 != num_sh_coeffs:
             return False
 
         if any(
