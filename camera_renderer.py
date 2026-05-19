@@ -4,6 +4,7 @@ from typing import Dict, List, Optional, Tuple, TypedDict
 
 import torch
 
+from bilateral_grids import BilGrids, get_pixel_coords
 from data_types import Camera, GaussianData
 from render_kernel import (
     get_ray_dirs_cam_pinhole_batched,
@@ -68,6 +69,20 @@ def init_rgb_decoder(
     return decoder, camera_id_to_index
 
 
+def init_bil_grids(
+    cameras: List[Camera],
+    bil_grids_state: Optional[dict],
+    device: torch.device,
+) -> Optional[BilGrids]:
+    if bil_grids_state is None:
+        return None
+    return BilGrids.from_checkpoint_state(
+        bil_grids_state,
+        [camera.id for camera in cameras],
+        device,
+    )
+
+
 def build_camera_data(cameras: CameraGroups, device: torch.device) -> CameraData:
     camera_data: CameraData = {}
     for resolution, camera_group in cameras.items():
@@ -100,6 +115,7 @@ def render_cameras(
     ego_position: torch.Tensor,
     render_params: Tuple[torch.Tensor, ...],
     rgb_decoder: Optional[RGBDecoder],
+    bil_grids: Optional[BilGrids],
     sky_data: Optional[GaussianData],
     sky_points: int,
     sky_cubemap: Optional[torch.Tensor],
@@ -164,6 +180,14 @@ def render_cameras(
                 raise RuntimeError("cubemap天空渲染需要ray_dirs_world_sky，但当前未生成")
             sky_colors = render_sky_cubemap(sky_cubemap, ray_dirs_world_sky)
             batch_colors = batch_colors + sky_colors * (1 - batch_alphas)
+
+        if bil_grids is not None:
+            pixel_coords = get_pixel_coords(width, height, batch_colors.device)
+            corrected = []
+            for cam_id, image in zip(camera_ids, batch_colors):
+                corrected_image, _ = bil_grids(cam_id, pixel_coords, image)
+                corrected.append(corrected_image)
+            batch_colors = torch.stack(corrected, dim=0)
 
         batch_colors = (batch_colors.clamp(0, 1) * 255).to(torch.uint8)
         for cam_id, image in zip(camera_ids, batch_colors):

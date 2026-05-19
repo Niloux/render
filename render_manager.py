@@ -3,10 +3,12 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import torch
 
+from bilateral_grids import BilGrids
 from camera_renderer import (
     build_camera_data,
     get_rgb_decoder_state_and_num_cams,
     group_cameras_by_resolution,
+    init_bil_grids,
     init_rgb_decoder,
     render_cameras,
 )
@@ -82,6 +84,7 @@ class RenderManager:
         self.render_camera: bool = True
         self.render_lidar: bool = False
         self.rgb_decoder: RGBDecoder | None = None
+        self.bil_grids: BilGrids | None = None
         self.mlp_decoder: MLPDecoder | None = None
         self.camera_id_to_index: Dict[str, int] = {}
         self.lidar_id_to_index: Dict[str, int] = {}
@@ -149,6 +152,9 @@ class RenderManager:
             self.rgb_decoder, self.camera_id_to_index = init_rgb_decoder(
                 cameras, num_cams_ckpt, rgb_decoder_state, self.device
             )
+            self.bil_grids = init_bil_grids(
+                cameras, self.camera_model.bil_grids_state, self.device
+            )
             self.camera_data = build_camera_data(self.cameras, self.device)
 
         lidar_raster_pts = self.lidar_model.raster_pts
@@ -173,6 +179,7 @@ class RenderManager:
         self.lidars = {}
         self.lidar_data = {}
         self.rgb_decoder = None
+        self.bil_grids = None
         self.mlp_decoder = None
         self.camera_id_to_index = {}
         self.lidar_id_to_index = {}
@@ -233,6 +240,7 @@ class RenderManager:
             ego_position,
             render_params,
             self.rgb_decoder,
+            self.bil_grids,
             self.camera_buffers.sky_data,
             self.camera_buffers.sky_points,
             self.sky_cubemap,

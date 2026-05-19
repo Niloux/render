@@ -64,6 +64,7 @@ def print_model_summary(model: GSModel, path: Path, show_components: bool) -> No
     print(f"- sky_cubemap: {format_shape(model.sky_cubemap) if model.sky_cubemap is not None else 'no'}")
     print(f"- actor_components: {len(actors)}")
     print(f"- rgb_decoder: {'yes' if model.rgb_decoder_state is not None else 'no'}")
+    print(f"- bil_grids: {'yes' if model.bil_grids_state is not None else 'no'}")
     print(f"- lidar_raster_pts: {format_shape(model.raster_pts) if model.raster_pts is not None else 'no'}")
     print(f"- mlp_decoder: {'yes' if model.mlp_decoder_state is not None else 'no'}")
 

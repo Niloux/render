@@ -11,6 +11,7 @@ SCENE_KEYS = {
     "iter",
     "raster_pts",
     "rgb_decoder",
+    "bil_grids",
     "MLPDecoder",
     "mlp_decoder",
     "lidar_decoder",
@@ -61,6 +62,7 @@ class GSModel:
         self.group: str = "camera"
         self.raster_pts: Optional[torch.Tensor] = None
         self.rgb_decoder_state: Optional[dict] = None
+        self.bil_grids_state: Optional[dict] = None
         self.mlp_decoder_state: Optional[dict] = None
 
         self.map_center: Optional[torch.Tensor] = None
@@ -129,6 +131,7 @@ class GSModel:
         self.iteration = int(checkpoint.get("iter", 0))
         self.raster_pts = checkpoint.get("raster_pts")
         self.rgb_decoder_state = checkpoint.get("rgb_decoder")
+        self.bil_grids_state = checkpoint.get("bil_grids")
         self.mlp_decoder_state = _optional_decoder_state(checkpoint, MLP_DECODER_KEYS)
 
         if "center_point" not in checkpoint:
@@ -220,6 +223,8 @@ class GSModel:
             checkpoint["raster_pts"] = self.raster_pts
         if self.rgb_decoder_state is not None:
             checkpoint["rgb_decoder"] = self.rgb_decoder_state
+        if self.bil_grids_state is not None:
+            checkpoint["bil_grids"] = self.bil_grids_state
         if self.mlp_decoder_state is not None:
             checkpoint["MLPDecoder"] = self.mlp_decoder_state
 
@@ -315,6 +320,7 @@ class GSModel:
         new_model.group = self.group
         new_model.iteration = self.iteration
         new_model.rgb_decoder_state = self.rgb_decoder_state
+        new_model.bil_grids_state = self.bil_grids_state
         new_model.mlp_decoder_state = self.mlp_decoder_state
         if self.raster_pts is not None:
             new_model.raster_pts = self.raster_pts.to(device)
