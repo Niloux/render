@@ -63,57 +63,41 @@ def build_lidar_coeffs(
             f"lidar {lidar.id} azimuth_resolution必须为正数，实际为{lidar.azimuth_resolution}"
         )
 
-    n_columns_float = azimuth_span / float(lidar.azimuth_resolution)
-    n_columns = int(round(n_columns_float))
-    if n_columns <= 0 or not math.isclose(
-        n_columns_float, n_columns, rel_tol=0.0, abs_tol=1e-4
-    ):
-        raise ValueError(
-            f"lidar {lidar.id} azimuth列数无法由范围和分辨率整除: "
-            f"span={azimuth_span} resolution={lidar.azimuth_resolution}"
-        )
     if lidar.n_elevation_channels <= 0:
         raise ValueError(
             f"lidar {lidar.id} n_elevation_channels必须为正数，实际为{lidar.n_elevation_channels}"
         )
 
-    dtype = torch.float32
-    row_elevations_rad = torch.linspace(
-        math.radians(float(lidar.max_elevation)),
-        math.radians(float(lidar.min_elevation)),
+    image_width = lidar_image_width(
+        lidar.min_azimuth,
+        lidar.max_azimuth,
+        lidar.azimuth_resolution,
+        lidar.tile_width,
+    )
+    return _build_linear_lidar_coeffs(
         int(lidar.n_elevation_channels),
-        dtype=dtype,
-        device=device,
-    )
-    azimuth_step_rad = math.radians(float(lidar.azimuth_resolution))
-    column_azimuths_rad = (
-        math.radians(float(lidar.max_azimuth))
-        - torch.arange(n_columns, dtype=dtype, device=device) * azimuth_step_rad
-    )
-    row_azimuth_offsets_rad = torch.zeros(
-        int(lidar.n_elevation_channels), dtype=dtype, device=device
+        image_width,
+        lidar.min_azimuth,
+        lidar.max_azimuth,
+        lidar.min_elevation,
+        lidar.max_elevation,
+        lidar.azimuth_resolution,
+        lidar.tile_width,
+        lidar.tile_height,
+        device,
     )
 
-    lidar_params = RowOffsetStructuredSpinningLidarModelParameters(
-        row_elevations_rad=row_elevations_rad,
-        column_azimuths_rad=column_azimuths_rad,
-        row_azimuth_offsets_rad=row_azimuth_offsets_rad,
-        spinning_frequency_hz=10.0,
-        spinning_direction=SpinningDirection.CLOCKWISE,
-    )
-    angles_to_columns_map = compute_lidar_angles_to_columns_map(lidar_params)
-    tiling = compute_lidar_tiling(
-        lidar_params,
-        n_bins_elevation=max(
-            1, math.ceil(int(lidar.n_elevation_channels) / int(lidar.tile_height))
-        ),
-        max_pts_per_tile=int(lidar.tile_width) * int(lidar.tile_height),
-        resolution_elevation=1600,
-        densification_factor_azimuth=8,
-    )
-    return RowOffsetStructuredSpinningLidarModelParametersExt(
-        lidar_params, angles_to_columns_map, tiling
-    )
+
+def lidar_image_width(
+    min_azimuth: float,
+    max_azimuth: float,
+    azimuth_resolution: float,
+    tile_width: int,
+) -> int:
+    azimuth_span = float(max_azimuth) - float(min_azimuth)
+    image_width = max(1, int(math.ceil(azimuth_span / float(azimuth_resolution))))
+    tile_width = max(1, int(tile_width))
+    return tile_width * math.ceil(image_width / tile_width)
 
 
 def build_lidar_coeffs_from_raster_pts(
@@ -321,9 +305,27 @@ def render_lidars(
     ) = render_params
 
     for lidar_id, lidar_cfg in lidar_data.items():
+        ego_pitch = -0.0061
+        ego_roll = 0.0443
         viewmats = calculate_viewmats(
-            lidar_cfg["extrinsics_tensor"], ego_heading, ego_position
+            lidar_cfg["extrinsics_tensor"],
+            ego_heading,
+            ego_position,
+            ego_pitch,
+            ego_roll,
         )
+        # print(f"viewmats wrong: {viewmats}")
+        # import numpy as np
+
+        # viewmats = np.load(
+        #     "/home/saimo/work/streetcrafter_codes_for_train_0508/lidar_pose_debug_frame_0.npz"
+        # )
+        # viewmats = (
+        #     torch.from_numpy(viewmats["train_viewmat"]).float().cuda().unsqueeze(0)
+        # )
+        # print(f"viewmats right: {viewmats}")
+
+        # quit()
         has_mlp_decoder = mlp_decoder is not None
         if has_mlp_decoder:
             lidar_features = compute_lidar_mlp_features_from_colors(
@@ -379,11 +381,12 @@ def render_lidars(
         out = process_lidar_output(
             rendered_feat, lidar_cfg["depth_valid_mask"], has_mlp_decoder
         )
-        lidars[lidar_id] = pano_to_lidar_with_intensities(
+        point_cloud = pano_to_lidar_with_intensities(
             out,
             directions=lidar_cfg["pano_dirs_lidar"],
             depth_valid_mask=lidar_cfg.get("depth_valid_mask", None),
         )
+        lidars[lidar_id] = point_cloud
 
     return lidars
 
@@ -446,9 +449,6 @@ def process_lidar_output(
         lidar_ray_drop_logits * gt_valid_mask - (1.0 - gt_valid_mask) * 10000.0
     )
 
-    lidar_depth_render, lidar_intensity = apply_depth_filter(
-        lidar_depth_render, lidar_intensity
-    )
     return {
         "depth": lidar_depth_render,
         "intensity": lidar_intensity,
@@ -464,15 +464,6 @@ def align_mask(mask: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
     if mask.numel() == target.numel():
         return mask.reshape(target.shape)
     return mask
-
-
-def apply_depth_filter(
-    depth: torch.Tensor, intensity: torch.Tensor
-) -> Tuple[torch.Tensor, torch.Tensor]:
-    depth_diff = torch.abs(depth[:, 1:] - depth[:, :-1])
-    full_mask = torch.ones_like(depth)
-    full_mask[:, 1:] = (depth_diff <= 0.5).float()
-    return depth * full_mask, intensity * full_mask
 
 
 def compute_lidar_features_from_colors(
@@ -525,3 +516,70 @@ def compute_lidar_mlp_features_from_colors(
         flat = torch.cat([flat, pad], dim=-1)
     feat = flat[:, :feature_dim]
     return feat.unsqueeze(0).expand(batch_size, -1, -1).contiguous()
+
+
+def _build_linear_lidar_coeffs(
+    image_height: int,
+    image_width: int,
+    min_azimuth,
+    max_azimuth,
+    min_elevation,
+    max_elevation,
+    azimuth_resolution,
+    tile_width,
+    tile_height,
+    device: torch.device,
+) -> RowOffsetStructuredSpinningLidarModelParametersExt:
+    image_height = int(image_height)
+    image_width = int(image_width)
+
+    def _scalar_float(value) -> float:
+        if torch.is_tensor(value):
+            return float(value.detach().cpu().item())
+        return float(value)
+
+    min_azimuth = _scalar_float(min_azimuth)
+    max_azimuth = _scalar_float(max_azimuth)
+    min_elevation = _scalar_float(min_elevation)
+    max_elevation = _scalar_float(max_elevation)
+    azimuth_resolution = _scalar_float(azimuth_resolution)
+    tile_width = int(_scalar_float(tile_width))
+    tile_height = int(_scalar_float(tile_height))
+
+    row_elevations_rad = torch.linspace(
+        math.radians(max_elevation),
+        math.radians(min_elevation),
+        image_height,
+        device=device,
+        dtype=torch.float32,
+    )
+    azimuth_step_rad = math.radians(azimuth_resolution)
+    if image_width > 1 and azimuth_step_rad * (image_width - 1) >= 2 * math.pi:
+        azimuth_step_rad = (2 * math.pi - 1e-6) / (image_width - 1)
+    column_azimuths_rad = (
+        math.radians(max_azimuth)
+        - torch.arange(image_width, device=device, dtype=torch.float32)
+        * azimuth_step_rad
+    )
+    row_azimuth_offsets_rad = torch.zeros(
+        image_height, device=device, dtype=torch.float32
+    )
+    lidar_params = RowOffsetStructuredSpinningLidarModelParameters(
+        row_elevations_rad=row_elevations_rad,
+        column_azimuths_rad=column_azimuths_rad,
+        row_azimuth_offsets_rad=row_azimuth_offsets_rad,
+        spinning_frequency_hz=10.0,
+        spinning_direction=SpinningDirection.CLOCKWISE,
+    )
+    lidar_coeffs = RowOffsetStructuredSpinningLidarModelParametersExt(
+        lidar_params,
+        compute_lidar_angles_to_columns_map(lidar_params),
+        compute_lidar_tiling(
+            lidar_params,
+            n_bins_elevation=max(1, math.ceil(image_height / max(tile_height, 1))),
+            max_pts_per_tile=max(1, tile_width * tile_height),
+            resolution_elevation=1600,
+            densification_factor_azimuth=8,
+        ),
+    )
+    return lidar_coeffs

@@ -44,9 +44,24 @@ class BenchmarkStats(TypedDict):
 
 
 STANDARD_EXTRINSICS: List[List[float]] = [
-    [-4.588266398430291063e-03, -3.413667297520365119e-03, 9.999836472098125872e-01, 1.544154267170511075e00],
-    [-9.999632354307952387e-01, -7.228375769820964344e-03, -4.612848415714690224e-03, -2.315740942895095494e-02],
-    [7.244004295493749329e-03, -9.999680482191979358e-01, -3.380376081852865672e-03, 2.115612062706179408e00],
+    [
+        -4.588266398430291063e-03,
+        -3.413667297520365119e-03,
+        9.999836472098125872e-01,
+        1.544154267170511075e00,
+    ],
+    [
+        -9.999632354307952387e-01,
+        -7.228375769820964344e-03,
+        -4.612848415714690224e-03,
+        -2.315740942895095494e-02,
+    ],
+    [
+        7.244004295493749329e-03,
+        -9.999680482191979358e-01,
+        -3.380376081852865672e-03,
+        2.115612062706179408e00,
+    ],
     [0.0, 0.0, 0.0, 1.0],
 ]
 
@@ -76,20 +91,29 @@ def validate_matrix(mat: Any, rows: int, cols: int, name: str) -> List[List[floa
     return out
 
 
-def save_point_cloud_as_ply(save_path: str, point_cloud: torch.Tensor | np.ndarray) -> None:
+def save_point_cloud_as_ply(
+    save_path: str, point_cloud: torch.Tensor | np.ndarray
+) -> None:
     if isinstance(point_cloud, torch.Tensor):
         points = point_cloud.detach().cpu().numpy()
     else:
         points = np.asarray(point_cloud)
 
     if points.ndim != 2 or points.shape[1] not in (3, 4):
-        raise ValueError(f"point_cloud 期望形状为 [N,3] 或 [N,4]，实际为 {points.shape}")
+        raise ValueError(
+            f"point_cloud 期望形状为 [N,3] 或 [N,4]，实际为 {points.shape}"
+        )
 
     points = points.astype(np.float32, copy=False)
     points = points[np.isfinite(points).all(axis=1)]
     has_intensity = points.shape[1] == 4
     if has_intensity:
-        dtype = np.dtype([("x", "<f4"), ("y", "<f4"), ("z", "<f4"), ("intensity", "<f4")])
+        dtype = np.dtype([
+            ("x", "<f4"),
+            ("y", "<f4"),
+            ("z", "<f4"),
+            ("intensity", "<f4"),
+        ])
         properties = "property float x\nproperty float y\nproperty float z\nproperty float intensity\n"
     else:
         dtype = np.dtype([("x", "<f4"), ("y", "<f4"), ("z", "<f4")])
@@ -131,8 +155,18 @@ def load_cameras_from_specs(
         cameras.append(
             Camera(
                 cam_id,
-                validate_matrix(spec.get("extrinsics", STANDARD_EXTRINSICS), 4, 4, f"{cam_id}.extrinsics"),
-                validate_matrix(spec.get("intrinsics", STANDARD_INTRINSICS), 3, 3, f"{cam_id}.intrinsics"),
+                validate_matrix(
+                    spec.get("extrinsics", STANDARD_EXTRINSICS),
+                    4,
+                    4,
+                    f"{cam_id}.extrinsics",
+                ),
+                validate_matrix(
+                    spec.get("intrinsics", STANDARD_INTRINSICS),
+                    3,
+                    3,
+                    f"{cam_id}.intrinsics",
+                ),
                 int(spec.get("width", default_width)),
                 int(spec.get("height", default_height)),
             )
@@ -154,7 +188,12 @@ def load_lidars_from_specs(specs: Any) -> List[Lidar]:
         lidars.append(
             Lidar(
                 lidar_id,
-                validate_matrix(spec.get("extrinsics", LIDAR_EXTRINSICS), 4, 4, f"{lidar_id}.extrinsics"),
+                validate_matrix(
+                    spec.get("extrinsics", LIDAR_EXTRINSICS),
+                    4,
+                    4,
+                    f"{lidar_id}.extrinsics",
+                ),
                 azimuth_resolution=float(spec.get("azimuth_resolution", 0.140625)),
                 min_azimuth=float(spec.get("min_azimuth", -180.0)),
                 max_azimuth=float(spec.get("max_azimuth", 180.0)),
@@ -189,7 +228,9 @@ def load_sensors_from_json(
 
 def create_test_cameras(count: int, width: int, height: int) -> List[Camera]:
     return [
-        Camera(f"camera{i + 1}", STANDARD_EXTRINSICS, STANDARD_INTRINSICS, width, height)
+        Camera(
+            f"camera{i + 1}", STANDARD_EXTRINSICS, STANDARD_INTRINSICS, width, height
+        )
         for i in range(count)
     ]
 
@@ -249,9 +290,11 @@ def create_test_scenario(
         render_lidar=render_config["render_lidar"],
     )
     frame_params = FrameParams(
-        ego_trajectory=[8093.55, 4680.36, 48.68],
-        ego_yaw=0.0242,
-        env_vehicles=[Vehicle([8130.21911375, 4680.84724959, 49.77610101], 0, "obj_015")],
+        ego_trajectory=[8073.322207, 4679.904873, 48.617000],
+        ego_yaw=0.02501,
+        env_vehicles=[
+            Vehicle([8103.21911375, 4680.84724959, 49.77610101], 0, "obj_015")
+        ],
         timestamp=20260401,
     )
     return init_params, frame_params
@@ -303,7 +346,9 @@ def run_benchmark(
     }
 
 
-def save_first_frame(frame_resp, config: BenchmarkConfig, render_config: RenderConfig) -> None:
+def save_first_frame(
+    frame_resp, config: BenchmarkConfig, render_config: RenderConfig
+) -> None:
     if render_config["render_camera"] and frame_resp.images:
         print(f"正在保存相机图像到 {config['output_dir']}...")
         try:
@@ -343,14 +388,18 @@ def print_init_summary(
 ) -> None:
     if render_config["render_camera"]:
         if config.get("sensors_json"):
-            print(f"- 相机: {len(init_params.cameras)}个 (from {config['sensors_json']})")
+            print(
+                f"- 相机: {len(init_params.cameras)}个 (from {config['sensors_json']})"
+            )
             for cam in init_params.cameras:
                 print(f"  - {cam.id}: {cam.width}x{cam.height}")
         else:
             print(f"- 相机: {config['camera_count']}个, 分辨率 {config['resolution']}")
     if render_config["render_lidar"]:
         if config.get("sensors_json"):
-            print(f"- 激光雷达: {len(init_params.lidars)}个 (from {config['sensors_json']})")
+            print(
+                f"- 激光雷达: {len(init_params.lidars)}个 (from {config['sensors_json']})"
+            )
             for lidar in init_params.lidars or []:
                 print(
                     f"  - {lidar.id}: tile={lidar.tile_width}x{lidar.tile_height}, "

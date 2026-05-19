@@ -73,7 +73,8 @@ def pano_to_lidar_with_intensities(out, directions, depth_valid_mask=None):
     if depth_valid_mask.shape != ray_drop_mask.shape:
         depth_valid_mask = depth_valid_mask.reshape(ray_drop_mask.shape)
 
-    valid_mask = depth_valid_mask & ray_drop_mask
+    depth_mask = torch.isfinite(pred_depth) & (pred_depth > 0.0)
+    valid_mask = depth_valid_mask & depth_mask & ray_drop_mask
     pred_point_cloud = pred_point_cloud[valid_mask]
 
     return pred_point_cloud

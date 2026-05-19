@@ -57,21 +57,42 @@ def calculate_viewmats(
     extrinsics_tensor: torch.Tensor,
     ego_heading: float,
     ego_position: torch.Tensor,
+    ego_pitch: float = 0.0,
+    ego_roll: float = 0.0,
 ) -> torch.Tensor:
     device = ego_position.device
-    cos_h = math.cos(float(ego_heading))
-    sin_h = math.sin(float(ego_heading))
-    ego_pose = torch.tensor(
-        [
-            [cos_h, -sin_h, 0.0, 0.0],
-            [sin_h, cos_h, 0.0, 0.0],
-            [0.0, 0.0, 1.0, 0.0],
-            [0.0, 0.0, 0.0, 1.0],
-        ],
+
+    yaw = float(ego_heading)
+    pitch = float(ego_pitch)
+    roll = float(ego_roll)
+
+    cy = math.cos(yaw)
+    sy = math.sin(yaw)
+    cp = math.cos(pitch)
+    sp = math.sin(pitch)
+    cr = math.cos(roll)
+    sr = math.sin(roll)
+
+    Rz = torch.tensor(
+        [[cy, -sy, 0.0], [sy, cy, 0.0], [0.0, 0.0, 1.0]],
         device=device,
         dtype=torch.float32,
     )
-    ego_pose = ego_pose.clone()
+    Ry = torch.tensor(
+        [[cp, 0.0, sp], [0.0, 1.0, 0.0], [-sp, 0.0, cp]],
+        device=device,
+        dtype=torch.float32,
+    )
+    Rx = torch.tensor(
+        [[1.0, 0.0, 0.0], [0.0, cr, -sr], [0.0, sr, cr]],
+        device=device,
+        dtype=torch.float32,
+    )
+
+    R_ego = Rz @ Ry @ Rx
+
+    ego_pose = torch.eye(4, device=device, dtype=torch.float32)
+    ego_pose[:3, :3] = R_ego
     ego_pose[:3, 3] = ego_position
 
     c2w = torch.matmul(ego_pose.unsqueeze(0), extrinsics_tensor)

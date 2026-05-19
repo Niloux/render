@@ -33,12 +33,12 @@ class RenderManager:
         self._configure_torch_backends(enable_torch_backends)
         self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
         self.model_path = model
-        self.camera_model = GSModel.load_from_pth(
-            model, group="camera"
-        ).to_device(self.device)
-        self.lidar_model = GSModel.load_from_pth(
-            model, group="lidar"
-        ).to_device(self.device)
+        self.camera_model = GSModel.load_from_pth(model, group="camera").to_device(
+            self.device
+        )
+        self.lidar_model = GSModel.load_from_pth(model, group="lidar").to_device(
+            self.device
+        )
         self.model = self.camera_model
 
         self.camera_background = self._required_component(
@@ -151,8 +151,11 @@ class RenderManager:
             )
             self.camera_data = build_camera_data(self.cameras, self.device)
 
+        lidar_raster_pts = self.lidar_model.raster_pts
+        if os.environ.get("RENDER_LIDAR_USE_CHECKPOINT_RASTER", "1") == "0":
+            lidar_raster_pts = None
         self.lidars, self.lidar_data = build_lidar_data(
-            params.lidars, self.device, self.lidar_model.raster_pts
+            params.lidars, self.device, lidar_raster_pts
         )
         self.mlp_decoder, self.lidar_id_to_index = init_mlp_decoder(
             self.render_lidar,
@@ -181,9 +184,7 @@ class RenderManager:
 
         ego_heading = params.ego_yaw
         ego_position = (
-            torch.tensor(
-                params.ego_trajectory, device=self.device, dtype=torch.float32
-            )
+            torch.tensor(params.ego_trajectory, device=self.device, dtype=torch.float32)
             - self.map_center
         )
 
@@ -200,9 +201,7 @@ class RenderManager:
             images = self._render_cameras(ego_heading, ego_position, render_params)
 
         lidar_position = (
-            torch.tensor(
-                params.ego_trajectory, device=self.device, dtype=torch.float32
-            )
+            torch.tensor(params.ego_trajectory, device=self.device, dtype=torch.float32)
             - self.lidar_map_center
         )
         lidars = {}
