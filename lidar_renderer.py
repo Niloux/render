@@ -426,6 +426,9 @@ def process_lidar_output(
     depth_valid_mask: torch.Tensor,
     has_mlp_decoder: bool,
 ) -> Dict[str, torch.Tensor]:
+    """根据局部开关决定是否启用 lidar 输出后处理，便于快速做效果对比。"""
+    enable_output_postprocess = False
+
     lidar_intensity = rendered_feat[..., 0].squeeze(0)
     if has_mlp_decoder:
         lidar_ray_drop_logits = rendered_feat[..., 1].squeeze(0)
@@ -437,17 +440,18 @@ def process_lidar_output(
         lidar_ray_drop_logits = rendered_feat[..., 1].squeeze(0)
     lidar_depth_render = rendered_feat[..., -1].squeeze(0)
 
-    valid_returns = align_mask(depth_valid_mask, lidar_depth_render)
-    gt_valid = valid_returns
+    if enable_output_postprocess:
+        valid_returns = align_mask(depth_valid_mask, lidar_depth_render)
+        gt_valid = valid_returns
 
-    valid_mask = valid_returns.to(lidar_depth_render.dtype)
-    lidar_intensity = lidar_intensity * valid_mask
-    lidar_depth_render = lidar_depth_render * valid_mask
+        valid_mask = valid_returns.to(lidar_depth_render.dtype)
+        lidar_intensity = lidar_intensity * valid_mask
+        lidar_depth_render = lidar_depth_render * valid_mask
 
-    gt_valid_mask = gt_valid.to(lidar_ray_drop_logits.dtype)
-    lidar_ray_drop_logits = (
-        lidar_ray_drop_logits * gt_valid_mask - (1.0 - gt_valid_mask) * 10000.0
-    )
+        gt_valid_mask = gt_valid.to(lidar_ray_drop_logits.dtype)
+        lidar_ray_drop_logits = (
+            lidar_ray_drop_logits * gt_valid_mask - (1.0 - gt_valid_mask) * 10000.0
+        )
 
     return {
         "depth": lidar_depth_render,
