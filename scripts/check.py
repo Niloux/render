@@ -57,6 +57,6 @@ def load_and_inspect_pth(pth_path):  # noqa: C901
 
 
 if __name__ == "__main__":
-    pth_path = "test_0519.pth"
+    pth_path = "vehicle_library.pth"
 
     checkpoint = load_and_inspect_pth(pth_path)

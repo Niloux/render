@@ -26,22 +26,32 @@ from mlp_decoder import MLPDecoder
 from models import GaussianComponent, GSModel
 from render_runtime import validate_frame_params, validate_init_params
 from rgb_decoder import RGBDecoder
+from vehicle_library import VehicleModelLibrary
 
 
 class RenderManager:
     def __init__(
-        self, model: str = "model.path", enable_torch_backends: bool = True
+        self,
+        model: str = "model.path",
+        vehicle_library_path: str | os.PathLike[str] | None = None,
+        enable_torch_backends: bool = True,
     ) -> None:
         self._configure_torch_backends(enable_torch_backends)
         self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+        if vehicle_library_path is None:
+            raise ValueError("必须提供vehicle_library_path，动态车辆只从车模库加载")
         self.model_path = model
-        self.camera_model = GSModel.load_from_pth(model, group="camera").to_device(
-            self.device
-        )
-        self.lidar_model = GSModel.load_from_pth(model, group="lidar").to_device(
-            self.device
-        )
+        self.vehicle_library_path = vehicle_library_path
+        self.camera_model = GSModel.load_from_pth(
+            model, group="camera", include_actor_components=False
+        ).to_device(self.device)
+        self.lidar_model = GSModel.load_from_pth(
+            model, group="lidar", include_actor_components=False
+        ).to_device(self.device)
         self.model = self.camera_model
+        self.vehicle_library = VehicleModelLibrary.load_from_directory(
+            vehicle_library_path, self.device
+        )
 
         self.camera_background = self._required_component(
             self.camera_model, "background"
@@ -51,12 +61,8 @@ class RenderManager:
         self.sky_cubemap: torch.Tensor | None = getattr(
             self.camera_model, "sky_cubemap", None
         )
-        self.camera_actors: List[GaussianComponent] = (
-            self.camera_model.get_components_by_type("obj")
-        )
-        self.lidar_actors: List[GaussianComponent] = (
-            self.lidar_model.get_components_by_type("obj")
-        )
+        self.camera_actors = self.vehicle_library.camera_actors
+        self.lidar_actors = self.vehicle_library.lidar_actors
         self.map_center = self._required_tensor(self.camera_model, "map_center").to(
             self.device
         )
@@ -64,12 +70,9 @@ class RenderManager:
             self.lidar_model, "map_center"
         ).to(self.device)
 
-        self.actor_map: Dict[str, GaussianComponent] = {
-            actor.name: actor for actor in self.camera_actors
-        }
-        self.lidar_actor_map: Dict[str, GaussianComponent] = {
-            actor.name: actor for actor in self.lidar_actors
-        }
+        self._validate_vehicle_library_features()
+        self.actor_map = self.vehicle_library.camera_actor_map
+        self.lidar_actor_map = self.vehicle_library.lidar_actor_map
         self.camera_buffers: RenderBuffers = build_render_buffers(
             self.camera_background, self.sky, self.camera_actors, self.device
         )
@@ -106,6 +109,33 @@ class RenderManager:
                 f"pth的{model.group}子模型缺少{attr_name}(scene参数)，无法渲染"
             )
         return value
+
+    def _validate_vehicle_library_features(self) -> None:
+        self._validate_actor_features(
+            self.camera_actors,
+            self.camera_background,
+            "camera",
+        )
+        self._validate_actor_features(
+            self.lidar_actors,
+            self.lidar_background,
+            "lidar",
+        )
+
+    @staticmethod
+    def _validate_actor_features(
+        actors: List[GaussianComponent],
+        reference: GaussianComponent,
+        group: str,
+    ) -> None:
+        reference_shape = tuple(reference.get_colors().shape[1:])
+        for actor in actors:
+            actor_shape = tuple(actor.get_colors().shape[1:])
+            if actor_shape != reference_shape:
+                raise ValueError(
+                    f"车模{actor.name}的{group}特征形状{actor_shape}与场景"
+                    f"background特征形状{reference_shape}不一致"
+                )
 
     @staticmethod
     def _configure_torch_backends(enable: bool) -> None:

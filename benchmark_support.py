@@ -23,6 +23,7 @@ class RenderConfig(TypedDict):
 
 class BenchmarkConfig(TypedDict):
     model_path: str
+    vehicle_library_path: str
     warmup_frames: int
     benchmark_frames: int
     save_first_frame: bool
@@ -293,7 +294,7 @@ def create_test_scenario(
         ego_trajectory=[8073.322207, 4679.904873, 48.617000],
         ego_yaw=0.02501,
         env_vehicles=[
-            Vehicle([8103.21911375, 4680.84724959, 49.77610101], 0, "obj_015")
+            Vehicle([8103.21911375, 4680.84724959, 49.77610101], 0, "car_0001")
         ],
         timestamp=20260401,
     )

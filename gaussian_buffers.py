@@ -88,15 +88,18 @@ def update_dynamic_buffer(
     map_center: torch.Tensor,
     device: torch.device,
 ) -> int:
-    if not vehicles or not actor_map:
+    if not vehicles:
         return 0
 
-    known_vehicles = [vehicle for vehicle in vehicles if vehicle.type in actor_map]
-    if not known_vehicles:
-        return 0
+    missing_types = sorted(
+        {vehicle.type for vehicle in vehicles if vehicle.type not in actor_map}
+    )
+    if missing_types:
+        raise ValueError(f"车模库中不存在车辆模型: {', '.join(missing_types)}")
 
     start_idx = buffers.static_points
-    for vehicle in known_vehicles:
+    max_points = buffers.static_points + buffers.max_dynamic_points
+    for vehicle in vehicles:
         position = (
             torch.tensor(vehicle.trajectory, device=device, dtype=torch.float32)
             - map_center
@@ -104,6 +107,12 @@ def update_dynamic_buffer(
         component = actor_map[vehicle.type]
         num_points = component.num_points
         end_idx = start_idx + num_points
+        if end_idx > max_points:
+            raise ValueError(
+                "动态车辆点数超过预分配容量: "
+                f"required={end_idx - buffers.static_points} "
+                f"capacity={buffers.max_dynamic_points}"
+            )
 
         buffers.render_buffer["means"][start_idx:end_idx] = component.get_xyz(
             vehicle.yaw, position

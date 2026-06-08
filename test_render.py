@@ -26,6 +26,12 @@ def parse_args() -> Tuple[BenchmarkConfig, RenderConfig]:
         default="/home/saimo/work/render/049_0518.pth",
         help="模型文件路径",
     )
+    parser.add_argument(
+        "--vehicle-library-path",
+        type=str,
+        required=True,
+        help="车模库目录路径，目录内包含manifest.json和单车模pth文件",
+    )
     parser.add_argument("--warmup", type=int, default=1, help="预热帧数")
     parser.add_argument("--frames", type=int, default=100, help="测试帧数")
     parser.add_argument("--no-save", action="store_true", help="不保存第一帧结果")
@@ -50,6 +56,7 @@ def parse_args() -> Tuple[BenchmarkConfig, RenderConfig]:
     }
     benchmark_config: BenchmarkConfig = {
         "model_path": args.model_path,
+        "vehicle_library_path": args.vehicle_library_path,
         "warmup_frames": args.warmup,
         "benchmark_frames": args.frames,
         "save_first_frame": not args.no_save,
@@ -74,7 +81,13 @@ def main() -> None:
         from render_manager import RenderManager
 
         print(f"初始化渲染管理器: {model_path}")
-        render_manager = RenderManager(str(model_path))
+        vehicle_library_path = Path(config["vehicle_library_path"])
+        if not vehicle_library_path.is_dir():
+            raise FileNotFoundError(f"车模库目录不存在: {vehicle_library_path}")
+
+        render_manager = RenderManager(
+            str(model_path), vehicle_library_path=str(vehicle_library_path)
+        )
         init_params, frame_params = create_test_scenario(config, render_config)
 
         print("初始化渲染器...")

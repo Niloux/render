@@ -76,6 +76,7 @@ class GSModel:
         pth_path: Union[str, Path],
         group: str = "camera",
         strict: bool = True,
+        include_actor_components: bool = True,
     ) -> "GSModel":
         """从PTH文件加载模型。
 
@@ -83,6 +84,7 @@ class GSModel:
             pth_path: PTH文件路径
             group: 新checkpoint中的渲染子模型，支持camera或lidar
             strict: 为True时组件验证失败会抛出异常；为False时跳过无效组件
+            include_actor_components: 是否加载obj_*动态车辆组件
 
         Returns:
             加载的GSModel实例
@@ -100,7 +102,11 @@ class GSModel:
 
         checkpoint = cls._select_checkpoint_group(checkpoint_root, group)
         model._load_scene_metadata(checkpoint)
-        model._load_components(checkpoint, strict=strict)
+        model._load_components(
+            checkpoint,
+            strict=strict,
+            include_actor_components=include_actor_components,
+        )
         model.validate_for_render()
 
         return model
@@ -152,11 +158,18 @@ class GSModel:
         if cube is not None:
             self.sky_cubemap = _as_f32_tensor(cube)
 
-    def _load_components(self, checkpoint: dict, strict: bool) -> None:
+    def _load_components(
+        self,
+        checkpoint: dict,
+        strict: bool,
+        include_actor_components: bool,
+    ) -> None:
         """加载checkpoint中的高斯组件。"""
         errors = []
         for name, data in checkpoint.items():
             if name in SCENE_KEYS or not isinstance(data, dict) or not data:
+                continue
+            if not include_actor_components and name.startswith("obj"):
                 continue
             if not all(key in data for key in COMPONENT_REQUIRED_KEYS):
                 continue
