@@ -114,12 +114,29 @@ class Vehicle:
         }
 
 
-@dataclass
+@dataclass(init=False)
 class FrameParams:
     ego_trajectory: List[float]  # (x, y, z)
     ego_yaw: float
     env_vehicles: List[Vehicle]
     timestamp: int
+
+    def __init__(
+        self,
+        ego_trajectory: List[float],
+        ego_yaw: float,
+        env_vehicles: Optional[List[Vehicle]] = None,
+        timestamp: Optional[int] = None,
+    ) -> None:
+        if timestamp is None and isinstance(env_vehicles, int):
+            timestamp = env_vehicles
+            env_vehicles = None
+        if timestamp is None:
+            raise ValueError("FrameParams必须提供timestamp")
+        self.ego_trajectory = ego_trajectory
+        self.ego_yaw = ego_yaw
+        self.env_vehicles = env_vehicles or []
+        self.timestamp = timestamp
 
     def to_json(self) -> Dict:
         """将FrameParams对象转换为JSON字典"""
