@@ -81,6 +81,34 @@ def build_render_buffers(
     )
 
 
+def _ensure_dynamic_capacity(
+    buffers: RenderBuffers, required_dynamic_points: int
+) -> None:
+    if required_dynamic_points <= buffers.max_dynamic_points:
+        return
+
+    new_dynamic_points = max(
+        required_dynamic_points, max(1, buffers.max_dynamic_points * 2)
+    )
+    new_total_points = buffers.static_points + new_dynamic_points
+    new_render_buffer: Dict[str, torch.Tensor] = {}
+    for name, old_tensor in buffers.render_buffer.items():
+        new_shape = (new_total_points, *old_tensor.shape[1:])
+        new_tensor = torch.empty(
+            new_shape, device=old_tensor.device, dtype=old_tensor.dtype
+        )
+        new_tensor[: buffers.static_points] = old_tensor[: buffers.static_points]
+        new_render_buffer[name] = new_tensor
+
+    buffers.render_buffer = new_render_buffer
+    buffers.zero_velocities = torch.zeros(
+        (new_total_points, 3),
+        device=buffers.zero_velocities.device,
+        dtype=buffers.zero_velocities.dtype,
+    )
+    buffers.max_dynamic_points = new_dynamic_points
+
+
 def update_dynamic_buffer(
     buffers: RenderBuffers,
     actor_map: Dict[str, GaussianComponent],
@@ -96,6 +124,11 @@ def update_dynamic_buffer(
     )
     if missing_types:
         raise ValueError(f"车模库中不存在车辆模型: {', '.join(missing_types)}")
+
+    required_dynamic_points = sum(
+        actor_map[vehicle.type].num_points for vehicle in vehicles
+    )
+    _ensure_dynamic_capacity(buffers, required_dynamic_points)
 
     start_idx = buffers.static_points
     max_points = buffers.static_points + buffers.max_dynamic_points
