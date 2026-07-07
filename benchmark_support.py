@@ -291,10 +291,10 @@ def create_test_scenario(
         render_lidar=render_config["render_lidar"],
     )
     frame_params = FrameParams(
-        ego_trajectory=[8073.322207, 4679.904873, 48.617000],
+        ego_trajectory=[8173.322207, 4681.904873, 48.617000],
         ego_yaw=0.02501,
         env_vehicles=[
-            Vehicle([8103.21911375, 4680.84724959, 49.77610101], 0, "car_0001")
+            Vehicle([8163.21911375, 4684.84724959, 49.77610101], 3.14, "car_0001")
         ],
         timestamp=20260401,
     )
